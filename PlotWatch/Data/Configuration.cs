@@ -58,6 +58,7 @@ public sealed class Configuration : IPluginConfiguration
         ToastNotificationsEnabled = true;
         SoundNotificationsEnabled = false;
         HousingWorldIds = [];
+        LastHousingCharacterContentId = 0;
         HousingDistrictIds = [339, 340, 341, 641, 979];
         HousingSizeMask = HousingEligibilityMask = 7;
         HousingPhaseMask = 15;

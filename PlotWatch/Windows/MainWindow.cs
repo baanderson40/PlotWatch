@@ -151,8 +151,6 @@ public sealed class MainWindow : Window
             requestedHousingWorlds = true;
             housingWorlds = worlds;
             selectedHousingWorldIds.RemoveWhere(id => worlds.All(world => world.Id != id));
-            if (selectedHousingWorldIds.Count == 0 && homeWorldId is { } homeId && worlds.Any(world => world.Id == homeId))
-                selectedHousingWorldIds.Add(homeId);
             if (!initializedPlotFilters)
             {
                 selectedDistrictIds.UnionWith(new int?[] { 339, 340, 341, 641, 979 });
@@ -181,16 +179,8 @@ public sealed class MainWindow : Window
     public void SetHomeWorld(int? worldId, ulong? characterContentId = null)
     {
         homeWorldId = worldId;
-        if (characterContentId is not > 0 || configuration.LastHousingCharacterContentId == characterContentId.Value)
-            return;
-
-        selectedHousingWorldIds.Clear();
-        if (worldId is { } homeId && housingWorlds.Any(world => world.Id == homeId))
-            selectedHousingWorldIds.Add(homeId);
-
-        configuration.LastHousingCharacterContentId = characterContentId.Value;
-        SaveHousingPreferencesIfChanged();
-        saveConfiguration();
+        if (HousingCharacterSelection.Apply(configuration, selectedHousingWorldIds, worldId, characterContentId))
+            saveConfiguration();
     }
 
     public IReadOnlyList<int> GetSelectedHousingWorldIds() => selectedHousingWorldIds.Order().ToArray();
@@ -624,7 +614,12 @@ public sealed class MainWindow : Window
 
     private void DrawHousingTable(IReadOnlyList<PaissaHousingWorldData> snapshots)
     {
-        var asOfUtc = lotterySnapshot?.NowUtc ?? DateTimeOffset.UtcNow;
+        if (lotterySnapshot is not { } schedule)
+        {
+            ImGui.TextDisabled("Waiting for lottery schedule snapshot...");
+            return;
+        }
+        var asOfUtc = schedule.NowUtc;
         var filters = new PaissaHousingFilters(
             selectedDistrictIds,
             selectedSizes,
@@ -665,7 +660,7 @@ public sealed class MainWindow : Window
             sortSpecs.SpecsDirty = false;
         }
 
-        rows = SortHousingRows(rows);
+        rows = PaissaHousingSorting.Sort(rows, tableSortColumn, tableSortAscending, asOfUtc);
 
         foreach (var row in rows)
         {
@@ -701,13 +696,10 @@ public sealed class MainWindow : Window
             }
             ImGui.TableNextColumn(); ImGui.TextUnformatted(plot.LottoEntries?.ToString() ?? "Unknown");
             ImGui.TableNextColumn(); ImGui.TextUnformatted(FormatDeadline(displayedDeadline));
-            if (ImGui.IsItemHovered() && displayedDeadline is { } closesAt)
+            if (ImGui.IsItemHovered())
             {
                 ImGui.BeginTooltip();
-                var remaining = closesAt - asOfUtc;
-                ImGui.TextUnformatted(remaining > TimeSpan.Zero
-                    ? $"Closes in {FormatRemaining(remaining)}"
-                    : "Closure time has passed.");
+                ImGui.TextUnformatted(PaissaHousingPolicy.GetClosureCountdown(plot, asOfUtc));
                 ImGui.EndTooltip();
             }
             ImGui.TableNextColumn(); ImGui.TextUnformatted(FormatUnixSourceTime(plot.LastUpdatedTime));
@@ -733,54 +725,6 @@ public sealed class MainWindow : Window
             ImGui.GetContentRegionAvail().X - ImGui.CalcTextSize(summary).X));
         ImGui.TextUnformatted(summary);
     }
-
-    private List<(PaissaHousingWorldData Snapshot, PaissaPlotListing Plot)> SortHousingRows(
-        List<(PaissaHousingWorldData Snapshot, PaissaPlotListing Plot)> rows)
-    {
-        IOrderedEnumerable<(PaissaHousingWorldData Snapshot, PaissaPlotListing Plot)> ordered = tableSortColumn switch
-        {
-            1 => Order(rows, row => row.Plot.DistrictName),
-            2 => Order(rows, row => row.Plot.WardNumber ?? int.MaxValue),
-            3 => Order(rows, row => row.Plot.PlotNumber ?? int.MaxValue),
-            4 => Order(rows, row => row.Plot.Size ?? int.MaxValue),
-            5 => Order(rows, row => row.Plot.Price ?? long.MaxValue),
-            6 => Order(rows, row => PaissaHousingPolicy.GetEligibility(row.Plot.PurchaseSystem)),
-            7 => Order(rows, row => PaissaHousingPolicy.GetPhaseFilter(row.Plot, lotterySnapshot?.NowUtc ?? row.Snapshot.DownloadedAtUtc)),
-            8 => Order(rows, row => row.Plot.LottoEntries ?? long.MaxValue),
-            9 => Order(rows, row => row.Plot.LottoPhaseUntil ?? long.MaxValue),
-            10 => Order(rows, row => row.Plot.LastUpdatedTime ?? double.MinValue),
-            _ => Order(rows, row => row.Snapshot.World.Name),
-        };
-        if (!tableSortAscending)
-            ordered = ReverseOrder(rows, tableSortColumn);
-        return ordered.ThenBy(row => row.Snapshot.World.Name)
-            .ThenBy(row => row.Plot.DistrictName)
-            .ThenBy(row => row.Plot.WardNumber ?? int.MaxValue)
-            .ThenBy(row => row.Plot.PlotNumber ?? int.MaxValue)
-            .ToList();
-    }
-
-    private static IOrderedEnumerable<(PaissaHousingWorldData Snapshot, PaissaPlotListing Plot)> Order<TKey>(
-        IEnumerable<(PaissaHousingWorldData Snapshot, PaissaPlotListing Plot)> rows,
-        Func<(PaissaHousingWorldData Snapshot, PaissaPlotListing Plot), TKey> key)
-        => rows.OrderBy(key);
-
-    private static IOrderedEnumerable<(PaissaHousingWorldData Snapshot, PaissaPlotListing Plot)> ReverseOrder(
-        IEnumerable<(PaissaHousingWorldData Snapshot, PaissaPlotListing Plot)> rows, int column)
-        => column switch
-        {
-            1 => rows.OrderByDescending(row => row.Plot.DistrictName),
-            2 => rows.OrderByDescending(row => row.Plot.WardNumber ?? int.MinValue),
-            3 => rows.OrderByDescending(row => row.Plot.PlotNumber ?? int.MinValue),
-            4 => rows.OrderByDescending(row => row.Plot.Size ?? int.MinValue),
-            5 => rows.OrderByDescending(row => row.Plot.Price ?? long.MinValue),
-            6 => rows.OrderByDescending(row => PaissaHousingPolicy.GetEligibility(row.Plot.PurchaseSystem)),
-            7 => rows.OrderByDescending(row => PaissaHousingPolicy.GetPhaseFilter(row.Plot, row.Snapshot.DownloadedAtUtc)),
-            8 => rows.OrderByDescending(row => row.Plot.LottoEntries ?? long.MinValue),
-            9 => rows.OrderByDescending(row => row.Plot.LottoPhaseUntil ?? long.MinValue),
-            10 => rows.OrderByDescending(row => row.Plot.LastUpdatedTime ?? double.MinValue),
-            _ => rows.OrderByDescending(row => row.Snapshot.World.Name),
-        };
 
     private static string FormatHousingSize(int? size) => size switch
     {

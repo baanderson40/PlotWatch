@@ -4,7 +4,7 @@ Dalamud plugin for FFXIV housing lottery tracking, available-plot discovery, ale
 
 Commands: `/plotwatch` and `/pw`.
 
-> **Status:** Phases 1–2 implemented; Release build and offline tests pass. Phase 2 schedule/dashboard validated in-game; visual polish deferred. PaissaDB browsing, bid tracking, and alerts remain unimplemented. Sweep automation and local housing capture are out of scope.
+> **Status:** Phases 1–2 implemented; Phase 3 multi-world PaissaDB browser and hardening implemented. Release build and offline verification results must be recorded separately from in-game acceptance. Phase 2 schedule/dashboard validated in-game. Bid records, passive capture, alerts, and optional travel remain pending. Sweep automation and local housing capture are out of scope.
 
 ## Product specification
 
@@ -16,7 +16,7 @@ Commands: `/plotwatch` and `/pw`.
 - Use PaissaDB API as the source for available-house listings.
 - Track placed bids per character.
 - Keep any travel to wards/plots tentative and user-triggered through optional Lifestream integration.
-- Do not capture or persist housing data locally; do not automate sweeps or ward selection.
+- Do not capture ward data or maintain a historical housing inventory locally; replaceable PaissaDB snapshot caching is allowed. Do not automate sweeps or ward selection.
 
 ### Lottery schedule
 
@@ -46,11 +46,11 @@ Commands: `/plotwatch` and `/pw`.
 - `/worlds` lists worlds; `/worlds/{worldId}` returns world and district details including available plots.
 - Convert PaissaDB's zero-based ward/plot values to the game's one-based display values in one API boundary.
 - Show world, district, ward, plot, size, price, purchase system, lottery phase, entrant count when reported, and last observed/update time.
-- Filter by region, data center, world, district, ward/plot ranges, size, price, and FC/personal availability. Blank filters mean any.
+- Implemented filters: selected worlds, district, size, FC/personal eligibility, and interpreted phase; home-world/DC/all/clear shortcuts. Checkbox filters require a selected category match. Dedicated region, ward/plot-range, and price filters remain pending.
 - Watch rules alert on matching plots. Acknowledge/Seen suppresses repeats until plot is observed closed and reopens.
 - Refresh on a configurable interval and on demand. Use bounded requests, timeout, backoff, and cache last successful response.
 - Never present API failure or missing fields as “no houses”; show unavailable/stale state and retain last successful data with its timestamp.
-- PaissaDB API is the sole source for housing listings. Keep only a temporary last-successful response cache; do not capture ward data or maintain a durable local housing inventory.
+- PaissaDB API is the sole source for housing listings. Persist a replaceable last-successful API snapshot cache for startup continuity, not a historical/local housing inventory. Do not capture ward data.
 
 ### Travel actions (tentative)
 
@@ -132,7 +132,25 @@ Commands: `/plotwatch` and `/pw`.
 
 ### Phase 3 — PaissaDB house browser
 
-**Status:** API diagnostic probe and one-world browser MVP implemented; production API/UI validation remains pending. Multi-world filters, ward/plot ranges, and saved browser preferences remain.
+**Status:** Multi-world browser, saved filter preferences, restart-safe API snapshot cache, and browser hardening implemented. User confirmed hardening works in-game on 2026-10-29; individual checklist results were not recorded. Dedicated region, ward/plot-range, and price filters remain pending.
+
+**Implemented browser behavior**
+
+- Read-only API diagnostics, typed parsing, one-based display addresses, retained last-successful snapshots, paced/cancellable refreshes, and failure/partial-response protection.
+- Multi-world selection with home-world, data-center, all, and clear shortcuts; saved district/size/eligibility/phase filters and sortable results.
+- Entry, Results, Unavailable, and Unknown use one typed classification for labels, filtering, and sorting.
+- Expired Entry becomes Results only during the matching cycle’s Results period; its displayed close becomes that Results-period end. Original API phase/deadline remain unchanged and available in tooltips.
+- Source freshness is separate: observations two or more phases old are Stale; invalid/missing timestamps have Unknown freshness. Cache download age is not source age.
+- Effective Closes sorting and live countdowns use the same cached schedule time as phase interpretation. Unknown deadlines/counts sort last in either direction.
+- Character changes select the new character’s home world, including same-world alts. Same-character manual choices survive framework updates and reloads. Selection works before directory download and saves once per character transition.
+- Shared custom palette, UTC/local display preference, and right-aligned result summary implemented.
+
+**Hardening verification**
+
+- Verification on 2026-10-29: Release build passed with zero warnings/errors; 51/51 offline tests passed; `git diff --check` passed.
+- Offline regression tests cover phase/filter boundaries, effective deadlines/countdowns, freshness boundaries, sorting, character-selection policy, and configuration reset/migration.
+- In-game validation: user confirmed the patch works on 2026-10-29. Detailed regression checklist (individual results not recorded): Entry-only filtering; Phase/Closes sorting both directions; inferred Results deadline; hovered countdown; UTC/local toggle; different-world and same-world character switches; switch while window closed; manual-selection persistence; plugin reload and delayed directory load.
+- Offline tests do not validate ImGui rendering, native character-state reads, or live Dalamud lifecycle behavior.
 
 **Deliverables**
 
@@ -145,9 +163,9 @@ Commands: `/plotwatch` and `/pw`.
 
 **Rules and acceptance**
 
-- PaissaDB API is authoritative for listings; no local ward-data capture or durable housing inventory.
+- PaissaDB API is authoritative for listings; no local ward-data capture or historical housing inventory. Disk cache contains replaceable API snapshots only.
 - Unknown entrant count is not zero. API failure is not “no houses.”
-- Cached listings remain visible with stale status and last-success timestamp.
+- Cached listings remain visible with source freshness and separate download timestamp; downloading old observations does not make them fresh.
 - API errors and partial responses are visible; opening UI does not cause request bursts.
 
 ### Phase 4 — Character management and bid records
