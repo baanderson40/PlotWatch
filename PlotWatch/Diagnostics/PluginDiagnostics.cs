@@ -14,6 +14,10 @@ public enum DiagnosticAction
     InspectCommandsAndUi,
     InspectDependencies,
     InspectLotteryClock,
+    FetchPaissaWorlds,
+    InspectPaissaWorld,
+    InspectPaissaSchema,
+    CancelPaissaRequest,
     ClearHistory,
 }
 
@@ -24,6 +28,7 @@ public enum DiagnosticSection
     CommandsAndUi,
     Dependencies,
     LotteryClock,
+    PaissaApi,
     LogsAndErrors,
 }
 
@@ -59,10 +64,18 @@ public sealed class PluginDiagnostics
 
     public string ConfigurationStatus { get; private set; }
     public string LastError { get; private set; } = "None";
-    public string PaissaHouseStatus { get; private set; } = "Unknown";
     public string LifestreamStatus { get; private set; } = "Unknown";
-    public string NavigationStatus { get; private set; } = "Unknown";
     public string LotteryClockStatus { get; private set; } = "Not inspected";
+    public IReadOnlyList<PlotWatch.Paissa.PaissaWorld> PaissaWorlds { get; private set; } = [];
+    public int? SelectedPaissaWorldId { get; set; }
+    public string PaissaWorldsStatus { get; private set; } = "Not fetched";
+    public DateTimeOffset? PaissaWorldsLastSuccessUtc { get; private set; }
+    public string PaissaInspectionStatus { get; private set; } = "Not inspected";
+    public DateTimeOffset? PaissaInspectionLastSuccessUtc { get; private set; }
+    public PlotWatch.Paissa.PaissaWorldInspection? PaissaInspection { get; private set; }
+    public string PaissaSchemaStatus { get; private set; } = "Not inspected";
+    public DateTimeOffset? PaissaSchemaLastSuccessUtc { get; private set; }
+    public string PaissaSchemaSummary { get; private set; } = "";
     public string MainCommandStatus { get; set; } = "Not registered";
     public string AliasCommandStatus { get; set; } = "Not registered";
     public string DrawCallbackStatus { get; set; } = "Not registered";
@@ -93,12 +106,38 @@ public sealed class PluginDiagnostics
 
     public void SetLotteryClockStatus(string value) => LotteryClockStatus = value;
 
-    public void SetDependencies(string paissaHouse, string lifestream, string navigation)
+    public void SetPaissaWorlds(IReadOnlyList<PlotWatch.Paissa.PaissaWorld>? worlds, string status, DateTimeOffset? successAtUtc = null)
     {
-        PaissaHouseStatus = paissaHouse;
-        LifestreamStatus = lifestream;
-        NavigationStatus = navigation;
+        PaissaWorldsStatus = status;
+        if (worlds is null)
+            return;
+
+        PaissaWorlds = worlds;
+        PaissaWorldsLastSuccessUtc = successAtUtc;
+        if (SelectedPaissaWorldId is null || !worlds.Any(world => world.Id == SelectedPaissaWorldId))
+            SelectedPaissaWorldId = worlds.FirstOrDefault()?.Id;
     }
+
+    public void SetPaissaInspection(PlotWatch.Paissa.PaissaWorldInspection? inspection, string status, DateTimeOffset? successAtUtc = null)
+    {
+        PaissaInspectionStatus = status;
+        if (inspection is not null)
+        {
+            PaissaInspection = inspection;
+            PaissaInspectionLastSuccessUtc = successAtUtc;
+        }
+    }
+
+    public void SetPaissaSchema(string summary, string status, DateTimeOffset? successAtUtc = null)
+    {
+        if (!string.IsNullOrEmpty(summary))
+            PaissaSchemaSummary = summary;
+        PaissaSchemaStatus = status;
+        if (!string.IsNullOrEmpty(summary))
+            PaissaSchemaLastSuccessUtc = successAtUtc;
+    }
+
+    public void SetLifestreamStatus(string value) => LifestreamStatus = value;
 
     public void Record(DiagnosticSeverity severity, string message)
     {

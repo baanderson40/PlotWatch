@@ -13,6 +13,9 @@
         <Compile Include="..\PlotWatch\Data\ConfigurationResetConfirmation.cs" Link="Production\ConfigurationResetConfirmation.cs" />
         <Compile Include="..\PlotWatch\Diagnostics\PluginDiagnostics.cs" Link="Production\PluginDiagnostics.cs" />
         <Compile Include="..\PlotWatch\Lottery\LotterySchedule.cs" Link="Production\LotterySchedule.cs" />
+        <Compile Include="..\PlotWatch\Paissa\PaissaApiParser.cs" Link="Production\PaissaApiParser.cs" />
+        <Compile Include="..\PlotWatch\Paissa\PaissaApiClient.cs" Link="Production\PaissaApiClient.cs" />
+        <Compile Include="..\PlotWatch\Paissa\PaissaHousingPolicy.cs" Link="Production\PaissaHousingPolicy.cs" />
         <Compile Include="..\PlotWatch\Windows\PlotWatchTab.cs" Link="Production\PlotWatchTab.cs" />
     </ItemGroup>
 </Project>

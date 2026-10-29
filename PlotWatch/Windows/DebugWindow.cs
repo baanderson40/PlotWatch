@@ -5,6 +5,7 @@ using Dalamud.Interface.Utility.Raii;
 using Dalamud.Interface.Windowing;
 using PlotWatch.Data;
 using PlotWatch.Diagnostics;
+using PlotWatch.Paissa;
 
 namespace PlotWatch.Windows;
 
@@ -17,6 +18,7 @@ public sealed class DebugWindow : Window
         (DiagnosticSection.CommandsAndUi, "Commands & UI", "Command ownership, callback registration, and window lifecycle."),
         (DiagnosticSection.Dependencies, "Dependencies", "Installed/loaded metadata for optional companion plugins."),
         (DiagnosticSection.LotteryClock, "Lottery Clock", "Calculated 9-day housing-lottery schedule and timezone display."),
+        (DiagnosticSection.PaissaApi, "PaissaDB API", "Explicit read-only checks against the live PaissaDB API."),
         (DiagnosticSection.LogsAndErrors, "Logs & Errors", "Recent diagnostic results retained for this session."),
     ];
 
@@ -74,13 +76,18 @@ public sealed class DebugWindow : Window
 
     public override void PreDraw()
     {
+        PlotWatchTheme.Push();
         var scale = ImGuiHelpers.GlobalScale;
         ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, 12f * scale);
         ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 8f * scale);
         ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 6f * scale);
     }
 
-    public override void PostDraw() => ImGui.PopStyleVar(3);
+    public override void PostDraw()
+    {
+        ImGui.PopStyleVar(3);
+        PlotWatchTheme.Pop();
+    }
 
     private void DrawSelectedSection()
     {
@@ -105,6 +112,9 @@ public sealed class DebugWindow : Window
                 break;
             case DiagnosticSection.LotteryClock:
                 DrawLotteryClock();
+                break;
+            case DiagnosticSection.PaissaApi:
+                DrawPaissaApi();
                 break;
             case DiagnosticSection.LogsAndErrors:
                 DrawHistory();
@@ -158,10 +168,8 @@ public sealed class DebugWindow : Window
 
     private void DrawDependencies()
     {
-        ImGui.TextUnformatted($"PaissaHouse: {diagnostics.PaissaHouseStatus}");
         ImGui.TextUnformatted($"Lifestream: {diagnostics.LifestreamStatus}");
-        ImGui.TextUnformatted($"Navigation: {diagnostics.NavigationStatus}");
-        ImGui.TextWrapped("Detection reports installed and loaded metadata only. Integration compatibility is not validated.");
+        ImGui.TextWrapped("Lifestream detection reports installed and loaded metadata only. Compatibility and travel behavior are not validated.");
         ImGui.Separator();
         if (DrawActionButton("Check dependencies"))
             enqueueAction(DiagnosticAction.InspectDependencies);
@@ -175,6 +183,123 @@ public sealed class DebugWindow : Window
         if (DrawActionButton("Inspect lottery clock"))
             enqueueAction(DiagnosticAction.InspectLotteryClock);
     }
+
+    private void DrawPaissaApi()
+    {
+        ImGui.TextWrapped("Requests run only when you press a check button. Responses are kept in memory for this session; failed requests do not erase the last successful result.");
+        ImGui.TextDisabled($"Base URL: {PaissaApiClient.BaseUrl}");
+        ImGui.Separator();
+
+        if (DrawActionButton("Fetch worlds"))
+            enqueueAction(DiagnosticAction.FetchPaissaWorlds);
+        ImGui.SameLine();
+        if (DrawActionButton("Inspect OpenAPI schema"))
+            enqueueAction(DiagnosticAction.InspectPaissaSchema);
+        if (diagnostics.IsRequestPending && ImGui.Button("Cancel current API request"))
+            enqueueAction(DiagnosticAction.CancelPaissaRequest);
+        ImGui.TextWrapped($"World list: {diagnostics.PaissaWorldsStatus}; cached worlds: {diagnostics.PaissaWorlds.Count}; last success: {diagnostics.PaissaWorldsLastSuccessUtc?.ToString("O") ?? "none"}");
+
+        if (diagnostics.PaissaWorlds.Count > 0)
+        {
+            var selected = diagnostics.PaissaWorlds.FirstOrDefault(world => world.Id == diagnostics.SelectedPaissaWorldId)
+                ?? diagnostics.PaissaWorlds[0];
+            if (ImGui.BeginCombo("World", $"{selected.Name} ({selected.DataCenterName}) · ID {selected.Id}"))
+            {
+                foreach (var world in diagnostics.PaissaWorlds)
+                {
+                    var isSelected = world.Id == diagnostics.SelectedPaissaWorldId;
+                    if (ImGui.Selectable($"{world.Name} ({world.DataCenterName}) · ID {world.Id}", isSelected))
+                        diagnostics.SelectedPaissaWorldId = world.Id;
+                    if (isSelected)
+                        ImGui.SetItemDefaultFocus();
+                }
+                ImGui.EndCombo();
+            }
+
+            if (DrawActionButton("Inspect selected world"))
+                enqueueAction(DiagnosticAction.InspectPaissaWorld);
+        }
+        else
+        {
+            ImGui.TextDisabled("Fetch world list before selecting a world.");
+        }
+
+        ImGui.TextWrapped($"World inspection: {diagnostics.PaissaInspectionStatus}; last success: {diagnostics.PaissaInspectionLastSuccessUtc?.ToString("O") ?? "none"}");
+        if (diagnostics.PaissaInspection is { } inspection)
+        {
+            ImGui.TextUnformatted($"{inspection.Name} (ID {inspection.Id}) · reported open plots: {inspection.ReportedOpenPlots?.ToString() ?? "Unknown"} · oldest observation: {FormatUnix(inspection.OldestPlotTime)}");
+            if (inspection.Warnings.Count > 0)
+            {
+                ImGui.TextColored(new Vector4(1f, 0.7f, 0.2f, 1f), $"Partial/unexpected response: {inspection.Warnings.Count} schema issue(s)");
+                foreach (var warning in inspection.Warnings.Take(8))
+                    ImGui.BulletText(warning);
+            }
+            ImGui.TextUnformatted("Districts:");
+            foreach (var district in inspection.Districts)
+                ImGui.BulletText($"{district.Name} (ID {district.Id}): API count {district.ReportedOpenPlots?.ToString() ?? "Unknown"}; parsed {district.ActualPlotCount}; oldest {FormatUnix(district.OldestPlotTime)}");
+
+            ImGui.TextUnformatted($"Field presence across {inspection.Districts.Sum(district => district.ActualPlotCount)} returned plots:");
+            if (ImGui.BeginTable("##paissa-fields", 5, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(0, 180f * ImGuiHelpers.GlobalScale)))
+            {
+                ImGui.TableSetupColumn("Field");
+                ImGui.TableSetupColumn("Present");
+                ImGui.TableSetupColumn("Null");
+                ImGui.TableSetupColumn("Missing");
+                ImGui.TableSetupColumn("Sample");
+                ImGui.TableHeadersRow();
+                foreach (var field in inspection.Fields)
+                {
+                    ImGui.TableNextRow();
+                    ImGui.TableNextColumn(); ImGui.TextUnformatted(field.Name);
+                    ImGui.TableNextColumn(); ImGui.TextUnformatted(field.PresentCount.ToString());
+                    ImGui.TableNextColumn(); ImGui.TextUnformatted(field.NullCount.ToString());
+                    ImGui.TableNextColumn(); ImGui.TextUnformatted(field.MissingCount.ToString());
+                    ImGui.TableNextColumn(); ImGui.TextUnformatted(field.SampleValue);
+                }
+                ImGui.EndTable();
+            }
+
+            ImGui.TextUnformatted("Sample plots (API ward/plot values are zero-based):");
+            foreach (var plot in inspection.Samples)
+            {
+                var address = plot.WardNumber is { } ward && plot.PlotNumber is { } number
+                    ? $"W{ward + 1} P{number + 1} (raw {ward}/{number})"
+                    : "Address unknown";
+                ImGui.BulletText($"{address}; size={FormatSize(plot.Size)}; price={plot.Price?.ToString("N0") ?? "Unknown"}; type={PaissaApiParser.DescribePurchaseSystem(plot.PurchaseSystem)}; phase={PaissaApiParser.DescribeLotteryPhase(plot.LottoPhase)}; entrants={plot.LottoEntries?.ToString() ?? "Unknown"}; deadline={FormatUnix(plot.LottoPhaseUntil)}; updated={FormatUnix(plot.LastUpdatedTime)}");
+            }
+        }
+
+        ImGui.Separator();
+        ImGui.TextWrapped($"OpenAPI schema: {diagnostics.PaissaSchemaStatus}; last success: {diagnostics.PaissaSchemaLastSuccessUtc?.ToString("O") ?? "none"}");
+        if (!string.IsNullOrEmpty(diagnostics.PaissaSchemaSummary))
+            ImGui.TextWrapped(diagnostics.PaissaSchemaSummary);
+    }
+
+    private static string FormatUnix(double? seconds)
+        => PaissaApiParser.UnixSecondsToUtc(seconds)?.ToString("yyyy-MM-dd HH:mm:ss 'UTC'") ?? "Unknown";
+
+    private static string FormatUnix(long? seconds)
+    {
+        if (seconds is null)
+            return "Unknown";
+        try
+        {
+            return DateTimeOffset.FromUnixTimeSeconds(seconds.Value).ToString("yyyy-MM-dd HH:mm:ss 'UTC'");
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return "Invalid timestamp";
+        }
+    }
+
+    private static string FormatSize(int? size) => size switch
+    {
+        0 => "Small",
+        1 => "Medium",
+        2 => "Large",
+        null => "Unknown",
+        _ => $"Unrecognized ({size})",
+    };
 
     private void DrawHistory()
     {

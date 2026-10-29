@@ -6,6 +6,7 @@ using Dalamud.Interface.Windowing;
 using PlotWatch.Data;
 using PlotWatch.Diagnostics;
 using PlotWatch.Lottery;
+using PlotWatch.Paissa;
 
 namespace PlotWatch.Windows;
 
@@ -16,6 +17,33 @@ public sealed class MainWindow : Window
     private readonly Action saveConfiguration;
     private readonly ConfigurationResetConfirmation resetConfirmation;
     private readonly Action openDebugWindow;
+    private readonly Action fetchHousingWorlds;
+    private readonly Action refreshHousingWorlds;
+    private readonly Action cancelHousingRequest;
+    private readonly Dictionary<int, PaissaHousingWorldData> housingCache = [];
+    private readonly Dictionary<int, string> housingWorldStatuses = [];
+    private IReadOnlyList<PaissaWorld> housingWorlds = [];
+    private string housingDirectoryStatus = "Not fetched";
+    private readonly HashSet<int> selectedHousingWorldIds = [];
+    private int? homeWorldId;
+    private bool requestedHousingWorlds;
+    private bool housingRequestPending;
+    private DateTimeOffset refreshCooldownUntilUtc;
+    private DateTimeOffset nextAutomaticRefreshUtc;
+    private int refreshProgressCompleted;
+    private int refreshProgressTotal;
+    private readonly HashSet<int?> selectedDistrictIds = [];
+    private readonly HashSet<int?> selectedSizes = [];
+    private readonly HashSet<PaissaEligibilityFilter> selectedEligibility = [];
+    private readonly HashSet<PaissaPhaseFilter> selectedPhases = [];
+    private bool initializedPlotFilters;
+    private int tableSortColumn;
+    private bool tableSortAscending = true;
+    private static readonly (int? Id, string Name)[] HousingDistricts =
+    [
+        (339, "Mist"), (340, "The Lavender Beds"), (341, "The Goblet"),
+        (641, "Shirogane"), (979, "Empyreum"),
+    ];
     private PlotWatchTab? requestedTab;
     private LotteryScheduleSnapshot? lotterySnapshot;
     private bool showScheduleDetails;
@@ -25,7 +53,10 @@ public sealed class MainWindow : Window
         PluginDiagnostics diagnostics,
         Action saveConfiguration,
         ConfigurationResetConfirmation resetConfirmation,
-        Action openDebugWindow)
+        Action openDebugWindow,
+        Action fetchHousingWorlds,
+        Action refreshHousingWorlds,
+        Action cancelHousingRequest)
         : base("PlotWatch")
     {
         this.configuration = configuration;
@@ -33,6 +64,17 @@ public sealed class MainWindow : Window
         this.saveConfiguration = saveConfiguration;
         this.resetConfirmation = resetConfirmation;
         this.openDebugWindow = openDebugWindow;
+        this.fetchHousingWorlds = fetchHousingWorlds;
+        this.refreshHousingWorlds = refreshHousingWorlds;
+        this.cancelHousingRequest = cancelHousingRequest;
+        selectedHousingWorldIds.UnionWith(configuration.HousingWorldIds);
+        selectedDistrictIds.UnionWith(configuration.HousingDistrictIds.Where(id => id >= 0).Select(id => (int?)id));
+        if ((configuration.HousingSizeMask & 1) != 0) selectedSizes.Add(0);
+        if ((configuration.HousingSizeMask & 2) != 0) selectedSizes.Add(1);
+        if ((configuration.HousingSizeMask & 4) != 0) selectedSizes.Add(2);
+        AddMasked(selectedEligibility, configuration.HousingEligibilityMask);
+        AddMasked(selectedPhases, configuration.HousingPhaseMask);
+        initializedPlotFilters = true;
         TitleBarButtons.Add(new TitleBarButton
         {
             Icon = FontAwesomeIcon.Bug,
@@ -53,13 +95,14 @@ public sealed class MainWindow : Window
             if (ImGui.BeginTabBar("##plotwatch-tabs"))
             {
                 DrawTab(PlotWatchTab.Dashboard, "Dashboard", DrawDashboard);
-                DrawTab(PlotWatchTab.Houses, "Houses", DrawPlaceholder);
+                DrawTab(PlotWatchTab.Houses, "Available Houses", DrawHouses);
                 DrawTab(PlotWatchTab.Bids, "Bids", DrawPlaceholder);
                 DrawTab(PlotWatchTab.Alerts, "Alerts", DrawPlaceholder);
-                DrawTab(PlotWatchTab.Sweeps, "Sweeps", DrawPlaceholder);
                 DrawTab(PlotWatchTab.Settings, "Settings", DrawSettings);
                 ImGui.EndTabBar();
             }
+
+            SaveHousingPreferencesIfChanged();
 
             requestedTab = null;
         }
@@ -71,13 +114,18 @@ public sealed class MainWindow : Window
 
     public override void PreDraw()
     {
+        PlotWatchTheme.Push();
         var scale = ImGuiHelpers.GlobalScale;
         ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, 12f * scale);
         ImGui.PushStyleVar(ImGuiStyleVar.TabRounding, 9f * scale);
         ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 6f * scale);
     }
 
-    public override void PostDraw() => ImGui.PopStyleVar(3);
+    public override void PostDraw()
+    {
+        ImGui.PopStyleVar(3);
+        PlotWatchTheme.Pop();
+    }
 
     public void SelectDefaultTab() => requestedTab = (PlotWatchTab)configuration.DefaultTab;
 
@@ -94,6 +142,77 @@ public sealed class MainWindow : Window
     }
 
     public void SetLotterySnapshot(LotteryScheduleSnapshot snapshot) => lotterySnapshot = snapshot;
+
+    public void SetHousingWorlds(IReadOnlyList<PaissaWorld>? worlds, string status)
+    {
+        housingDirectoryStatus = status;
+        if (worlds is not null)
+        {
+            requestedHousingWorlds = true;
+            housingWorlds = worlds;
+            selectedHousingWorldIds.RemoveWhere(id => worlds.All(world => world.Id != id));
+            if (selectedHousingWorldIds.Count == 0 && homeWorldId is { } homeId && worlds.Any(world => world.Id == homeId))
+                selectedHousingWorldIds.Add(homeId);
+            if (!initializedPlotFilters)
+            {
+                selectedDistrictIds.UnionWith(new int?[] { 339, 340, 341, 641, 979 });
+                selectedSizes.UnionWith(new int?[] { 0, 1, 2 });
+                selectedEligibility.UnionWith(Enum.GetValues<PaissaEligibilityFilter>()
+                    .Where(option => option != PaissaEligibilityFilter.Unknown));
+                selectedPhases.UnionWith([
+                    PaissaPhaseFilter.Available,
+                    PaissaPhaseFilter.Results,
+                    PaissaPhaseFilter.Unavailable,
+                    PaissaPhaseFilter.Unknown,
+                ]);
+                initializedPlotFilters = true;
+            }
+        }
+
+    }
+
+    public void SetHousingWorldData(int worldId, PaissaHousingWorldData? data, string status)
+    {
+        housingWorldStatuses[worldId] = status;
+        if (data is not null)
+            housingCache[worldId] = data;
+    }
+
+    public void SetHomeWorld(int? worldId, ulong? characterContentId = null)
+    {
+        homeWorldId = worldId;
+        if (characterContentId is not > 0 || configuration.LastHousingCharacterContentId == characterContentId.Value)
+            return;
+
+        selectedHousingWorldIds.Clear();
+        if (worldId is { } homeId && housingWorlds.Any(world => world.Id == homeId))
+            selectedHousingWorldIds.Add(homeId);
+
+        configuration.LastHousingCharacterContentId = characterContentId.Value;
+        SaveHousingPreferencesIfChanged();
+        saveConfiguration();
+    }
+
+    public IReadOnlyList<int> GetSelectedHousingWorldIds() => selectedHousingWorldIds.Order().ToArray();
+
+    public void SetHousingRequestPending(bool pending) => housingRequestPending = pending;
+
+    public void SetHousingRefreshCooldown(DateTimeOffset untilUtc) => refreshCooldownUntilUtc = untilUtc;
+
+    public void SetNextAutomaticRefresh(DateTimeOffset atUtc) => nextAutomaticRefreshUtc = atUtc;
+
+    public void SetHousingRefreshProgress(int completed, int total)
+    {
+        refreshProgressCompleted = completed;
+        refreshProgressTotal = total;
+    }
+
+    public PaissaWorld? GetHousingWorld(int worldId)
+        => housingWorlds.FirstOrDefault(world => world.Id == worldId);
+
+    public IReadOnlyList<PaissaWorld> GetAllHousingWorlds() => housingWorlds;
+
+    public bool HasHousingSnapshot(int worldId) => housingCache.ContainsKey(worldId);
 
     private void DrawDashboard()
     {
@@ -170,10 +289,527 @@ public sealed class MainWindow : Window
             ? "Entries can be placed"
             : "Winning bids can be accepted";
 
-    private static void DrawPlaceholder()
+    private void DrawHouses()
     {
-        ImGui.TextWrapped("This section is planned but not implemented yet. PlotWatch will not display fabricated housing or lottery data.");
+        if (!requestedHousingWorlds)
+        {
+            requestedHousingWorlds = true;
+            fetchHousingWorlds();
+        }
+
+        if (housingWorlds.Count == 0)
+        {
+            ImGui.TextDisabled("Listings from PaissaDB. Download time and source observation time are separate.");
+            ImGui.TextWrapped($"World directory: {housingDirectoryStatus}");
+            if (ImGui.Button("Fetch world directory"))
+            {
+                requestedHousingWorlds = true;
+                fetchHousingWorlds();
+            }
+            return;
+        }
+
+        var availableWidth = ImGui.GetContentRegionAvail().X;
+        var sidebarWidth = Math.Min(GetWorldShortcutWidth(), Math.Max(160f, availableWidth - 260f));
+        if (ImGui.BeginChild("##housing-filter-sidebar", new Vector2(sidebarWidth, 0), true))
+        {
+            var footerHeight = ImGui.GetFrameHeight() + ImGui.GetStyle().ItemSpacing.Y + 8f;
+            if (ImGui.BeginChild("##housing-filter-scroll", new Vector2(0, -footerHeight), false))
+            {
+                DrawWorldFilters();
+                DrawDistrictFilters();
+                DrawSizeFilters();
+                DrawEligibilityFilters();
+                DrawPhaseFilters();
+                if (ImGui.Button("Reset Filters"))
+                    ResetHousingFilters();
+            }
+            ImGui.EndChild();
+            DrawCacheRefreshControl();
+        }
+        ImGui.EndChild();
+
+        ImGui.SameLine();
+        if (ImGui.BeginChild("##housing-results", new Vector2(0, 0), false))
+        {
+            DrawHousingResults();
+        }
+        ImGui.EndChild();
     }
+
+    private static float GetWorldShortcutWidth()
+    {
+        var style = ImGui.GetStyle();
+        var labels = new[] { "World", "DC", "All", "Clear" };
+        var textWidth = labels.Sum(label => ImGui.CalcTextSize(label).X);
+        return textWidth + labels.Length * style.FramePadding.X * 2f
+            + (labels.Length - 1) * style.ItemSpacing.X
+            + style.WindowPadding.X * 2f + 20f;
+    }
+
+    private void DrawWorldFilters()
+    {
+        if (ImGui.CollapsingHeader("Worlds", ImGuiTreeNodeFlags.DefaultOpen))
+        {
+            if (ImGui.SmallButton("World"))
+            {
+                selectedHousingWorldIds.Clear();
+                if (homeWorldId is { } home && housingWorlds.Any(world => world.Id == home))
+                    selectedHousingWorldIds.Add(home);
+            }
+            ImGui.SameLine();
+            if (ImGui.SmallButton("DC"))
+            {
+                selectedHousingWorldIds.Clear();
+                if (homeWorldId is { } home && housingWorlds.FirstOrDefault(world => world.Id == home) is { } homeWorld)
+                    selectedHousingWorldIds.UnionWith(housingWorlds.Where(world => world.DataCenterId == homeWorld.DataCenterId).Select(world => world.Id));
+            }
+            ImGui.SameLine();
+            if (ImGui.SmallButton("All"))
+                selectedHousingWorldIds.UnionWith(housingWorlds.Select(world => world.Id));
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Clear"))
+                selectedHousingWorldIds.Clear();
+
+            foreach (var group in housingWorlds.GroupBy(world => world.DataCenterName).OrderBy(group => group.Key))
+            {
+                var groupName = group.Key;
+                var worlds = group.OrderBy(world => world.Name).ToArray();
+                var checkedCount = worlds.Count(world => selectedHousingWorldIds.Contains(world.Id));
+                var treeFlags = ImGuiTreeNodeFlags.SpanAvailWidth;
+                if (string.Equals(groupName, HomeDataCenterName(), StringComparison.Ordinal))
+                    treeFlags |= ImGuiTreeNodeFlags.DefaultOpen;
+                if (ImGui.TreeNodeEx($"{groupName}##dc-{groupName}", treeFlags, $"{groupName}  {checkedCount}/{worlds.Length}"))
+                {
+                    foreach (var world in worlds)
+                    {
+                        var selected = selectedHousingWorldIds.Contains(world.Id);
+                        if (ImGui.Checkbox($"{world.Name}##world-{world.Id}", ref selected))
+                        {
+                            if (selected) selectedHousingWorldIds.Add(world.Id);
+                            else selectedHousingWorldIds.Remove(world.Id);
+                        }
+                    }
+                    ImGui.TreePop();
+                }
+            }
+        }
+    }
+
+    private string? HomeDataCenterName()
+        => homeWorldId is { } home ? housingWorlds.FirstOrDefault(world => world.Id == home)?.DataCenterName : null;
+
+    private void DrawDistrictFilters()
+    {
+        if (!ImGui.CollapsingHeader("Districts", ImGuiTreeNodeFlags.DefaultOpen))
+            return;
+        foreach (var (id, name) in HousingDistricts)
+        {
+            var selected = selectedDistrictIds.Contains(id);
+            if (ImGui.Checkbox(name, ref selected))
+            {
+                if (selected) selectedDistrictIds.Add(id);
+                else selectedDistrictIds.Remove(id);
+            }
+        }
+    }
+
+    private void DrawSizeFilters()
+    {
+        if (!ImGui.CollapsingHeader("Size", ImGuiTreeNodeFlags.DefaultOpen))
+            return;
+        DrawNullableIntCheckbox("Small", 0, selectedSizes);
+        DrawNullableIntCheckbox("Medium", 1, selectedSizes);
+        DrawNullableIntCheckbox("Large", 2, selectedSizes);
+    }
+
+    private void DrawEligibilityFilters()
+    {
+        if (!ImGui.CollapsingHeader("Eligibility", ImGuiTreeNodeFlags.DefaultOpen))
+            return;
+        DrawEligibilityCheckbox("Free Company", PaissaEligibilityFilter.FreeCompany);
+        DrawEligibilityCheckbox("Personal & FC", PaissaEligibilityFilter.PersonalAndFreeCompany);
+        DrawEligibilityCheckbox("Personal", PaissaEligibilityFilter.Personal);
+    }
+
+    private void DrawEligibilityCheckbox(string label, PaissaEligibilityFilter option)
+    {
+        var selected = selectedEligibility.Contains(option);
+        if (ImGui.Checkbox(label, ref selected))
+        {
+            if (selected) selectedEligibility.Add(option);
+            else selectedEligibility.Remove(option);
+        }
+    }
+
+    private void DrawPhaseFilters()
+    {
+        if (!ImGui.CollapsingHeader("Phase", ImGuiTreeNodeFlags.DefaultOpen))
+            return;
+        DrawPhaseCheckbox("Entry", PaissaPhaseFilter.Available);
+        DrawPhaseCheckbox("Results", PaissaPhaseFilter.Results);
+        DrawPhaseCheckbox("Unavailable", PaissaPhaseFilter.Unavailable);
+        DrawPhaseCheckbox("Unknown", PaissaPhaseFilter.Unknown);
+    }
+
+    private void DrawPhaseCheckbox(string label, PaissaPhaseFilter option)
+    {
+        var selected = selectedPhases.Contains(option);
+        if (ImGui.Checkbox(label, ref selected))
+        {
+            if (selected) selectedPhases.Add(option);
+            else selectedPhases.Remove(option);
+        }
+    }
+
+    private static void DrawNullableIntCheckbox(string label, int? value, HashSet<int?> set)
+    {
+        var selected = set.Contains(value);
+        if (ImGui.Checkbox(label, ref selected))
+        {
+            if (selected) set.Add(value);
+            else set.Remove(value);
+        }
+    }
+
+    private void DrawCacheRefreshControl()
+    {
+        var nowUtc = lotterySnapshot?.NowUtc ?? DateTimeOffset.MinValue;
+        var cacheCount = housingCache.Count;
+        var oldest = housingCache.Values.Select(snapshot => snapshot.DownloadedAtUtc).DefaultIfEmpty().Min();
+        var label = housingRequestPending
+            ? $"Refreshing: {refreshProgressCompleted}/{refreshProgressTotal} worlds"
+            : $"Cached: {cacheCount} worlds - {(cacheCount == 0 ? "never" : FormatAge(oldest, nowUtc))}";
+        if (ImGui.Selectable(label, false, ImGuiSelectableFlags.None, Vector2.Zero))
+        {
+            if (!housingRequestPending && refreshCooldownUntilUtc <= nowUtc)
+                refreshHousingWorlds();
+        }
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.BeginTooltip();
+            if (housingRequestPending)
+            {
+                ImGui.TextUnformatted($"Refreshing world listings: {refreshProgressCompleted}/{refreshProgressTotal} completed.");
+                if (refreshCooldownUntilUtc > nowUtc)
+                    ImGui.TextUnformatted($"Server cooldown: {FormatRemaining(refreshCooldownUntilUtc - nowUtc)} remaining.");
+            }
+            else if (refreshCooldownUntilUtc > nowUtc)
+            {
+                ImGui.TextUnformatted($"Refresh available in {FormatRemaining(refreshCooldownUntilUtc - nowUtc)}.");
+                ImGui.TextUnformatted("Click to refresh after cooldown.");
+            }
+            else
+                ImGui.TextUnformatted("Refresh now — click to refresh all worlds.");
+
+            ImGui.TextUnformatted($"Cached worlds: {cacheCount}/{housingWorlds.Count}; listings: {housingCache.Values.Sum(snapshot => snapshot.Listings.Count)}.");
+            ImGui.TextUnformatted($"Oldest download: {(oldest == default ? "never" : oldest.ToString("yyyy-MM-dd HH:mm:ss 'UTC'"))}.");
+            if (nextAutomaticRefreshUtc != default)
+                ImGui.TextUnformatted($"Next automatic refresh: {nextAutomaticRefreshUtc:yyyy-MM-dd HH:mm:ss 'UTC'}.");
+            ImGui.EndTooltip();
+        }
+    }
+
+    private static string FormatAge(DateTimeOffset utc, DateTimeOffset nowUtc)
+    {
+        if (utc == default)
+            return "unknown";
+        var age = nowUtc - utc;
+        if (age < TimeSpan.Zero) age = TimeSpan.Zero;
+        if (age.TotalDays >= 1) return $"{(int)age.TotalDays}d ago";
+        if (age.TotalHours >= 1) return $"{(int)age.TotalHours}h ago";
+        return $"{Math.Max(1, (int)age.TotalMinutes)}m ago";
+    }
+
+    private static string FormatRemaining(TimeSpan remaining)
+    {
+        if (remaining < TimeSpan.Zero) remaining = TimeSpan.Zero;
+        return remaining.TotalHours >= 1
+            ? $"{(int)remaining.TotalHours:00}:{remaining.Minutes:00}:{remaining.Seconds:00}"
+            : $"{remaining.Minutes:00}:{remaining.Seconds:00}";
+    }
+
+    private void ResetHousingFilters()
+    {
+        selectedDistrictIds.Clear();
+        selectedDistrictIds.UnionWith(new int?[] { 339, 340, 341, 641, 979 });
+        selectedSizes.Clear();
+        selectedSizes.UnionWith(new int?[] { 0, 1, 2 });
+        selectedEligibility.Clear();
+        selectedEligibility.UnionWith(Enum.GetValues<PaissaEligibilityFilter>()
+            .Where(option => option != PaissaEligibilityFilter.Unknown));
+        selectedPhases.Clear();
+        selectedPhases.UnionWith([
+            PaissaPhaseFilter.Available, PaissaPhaseFilter.Results, PaissaPhaseFilter.Unavailable,
+            PaissaPhaseFilter.Unknown,
+        ]);
+    }
+
+    private static void AddMasked<T>(HashSet<T> values, int mask) where T : struct, Enum
+    {
+        var options = Enum.GetValues<T>();
+        for (var index = 0; index < options.Length; index++)
+            if ((mask & (1 << index)) != 0)
+                values.Add(options[index]);
+    }
+
+    private void SaveHousingPreferencesIfChanged()
+    {
+        var worldIds = selectedHousingWorldIds.Order().ToList();
+        var districtIds = selectedDistrictIds.Select(id => id ?? -1).Order().ToList();
+        var sizeMask = (selectedSizes.Contains(0) ? 1 : 0)
+            | (selectedSizes.Contains(1) ? 2 : 0)
+            | (selectedSizes.Contains(2) ? 4 : 0)
+            | (selectedSizes.Contains(null) ? 8 : 0);
+        var eligibilityMask = Mask(selectedEligibility);
+        var phaseMask = Mask(selectedPhases);
+        var changed = !configuration.HousingWorldIds.SequenceEqual(worldIds)
+            || !configuration.HousingDistrictIds.SequenceEqual(districtIds)
+            || configuration.HousingSizeMask != sizeMask
+            || configuration.HousingEligibilityMask != eligibilityMask
+            || configuration.HousingPhaseMask != phaseMask;
+        if (!changed)
+            return;
+        configuration.HousingWorldIds = worldIds;
+        configuration.HousingDistrictIds = districtIds;
+        configuration.HousingSizeMask = sizeMask;
+        configuration.HousingEligibilityMask = eligibilityMask;
+        configuration.HousingPhaseMask = phaseMask;
+        saveConfiguration();
+    }
+
+    private static int Mask<T>(IReadOnlySet<T> values) where T : struct, Enum
+    {
+        var mask = 0;
+        var options = Enum.GetValues<T>();
+        for (var index = 0; index < options.Length; index++)
+            if (values.Contains(options[index]))
+                mask |= 1 << index;
+        return mask;
+    }
+
+    private void DrawHousingResults()
+    {
+        var selectedWorlds = housingWorlds.Where(world => selectedHousingWorldIds.Contains(world.Id)).ToArray();
+
+        if (housingRequestPending)
+        {
+            ImGui.SameLine();
+            if (ImGui.Button("Cancel"))
+                cancelHousingRequest();
+        }
+
+        if (selectedWorlds.Length == 0)
+        {
+            ImGui.TextDisabled("Select one or more worlds in the sidebar.");
+            return;
+        }
+
+        var missing = selectedWorlds.Where(world => !housingCache.ContainsKey(world.Id)).ToArray();
+        if (missing.Length > 0)
+            ImGui.TextWrapped($"Not loaded or unavailable: {string.Join(", ", missing.Select(world => world.Name))}");
+
+        var snapshots = selectedWorlds.Where(world => housingCache.ContainsKey(world.Id))
+            .Select(world => housingCache[world.Id]).ToArray();
+        if (snapshots.Length == 0)
+        {
+            ImGui.TextDisabled("No successful listing responses cached. Select worlds, then refresh selected.");
+            return;
+        }
+        foreach (var failedWorld in selectedWorlds.Where(world => housingWorldStatuses.TryGetValue(world.Id, out var state) && state.Contains("failed", StringComparison.OrdinalIgnoreCase)))
+            ImGui.BulletText($"{failedWorld.Name}: {housingWorldStatuses[failedWorld.Id]}");
+
+        DrawHousingTable(snapshots);
+    }
+
+    private void DrawHousingTable(IReadOnlyList<PaissaHousingWorldData> snapshots)
+    {
+        var asOfUtc = lotterySnapshot?.NowUtc ?? DateTimeOffset.UtcNow;
+        var filters = new PaissaHousingFilters(
+            selectedDistrictIds,
+            selectedSizes,
+            selectedEligibility,
+            selectedPhases);
+        var rows = snapshots.SelectMany(snapshot => snapshot.Listings.Select(plot => (Snapshot: snapshot, Plot: plot)))
+            .Where(row => PaissaHousingPolicy.Matches(row.Plot, filters, asOfUtc))
+            .ToList();
+
+        const ImGuiTableFlags tableFlags = ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg |
+            ImGuiTableFlags.Resizable | ImGuiTableFlags.Reorderable | ImGuiTableFlags.Hideable |
+            ImGuiTableFlags.Sortable | ImGuiTableFlags.ScrollY | ImGuiTableFlags.ScrollX;
+        var footerHeight = ImGui.GetFrameHeight() + ImGui.GetStyle().ItemSpacing.Y;
+        var tableHeight = Math.Max(1f, ImGui.GetContentRegionAvail().Y - footerHeight);
+        if (!ImGui.BeginTable("##paissa-housing-listings", 11, tableFlags, new Vector2(0, tableHeight)))
+            return;
+
+        ImGui.TableSetupScrollFreeze(0, 1);
+        ImGui.TableSetupColumn("World", ImGuiTableColumnFlags.DefaultSort, 0, 0);
+        ImGui.TableSetupColumn("District", ImGuiTableColumnFlags.None, 0, 1);
+        ImGui.TableSetupColumn("Ward", ImGuiTableColumnFlags.None, 0, 2);
+        ImGui.TableSetupColumn("Plot", ImGuiTableColumnFlags.None, 0, 3);
+        ImGui.TableSetupColumn("Size", ImGuiTableColumnFlags.None, 0, 4);
+        ImGui.TableSetupColumn("Price", ImGuiTableColumnFlags.None, 0, 5);
+        ImGui.TableSetupColumn("Eligibility", ImGuiTableColumnFlags.None, 0, 6);
+        ImGui.TableSetupColumn("Phase", ImGuiTableColumnFlags.None, 0, 7);
+        ImGui.TableSetupColumn("Entries", ImGuiTableColumnFlags.None, 0, 8);
+        ImGui.TableSetupColumn("Closes", ImGuiTableColumnFlags.None, 0, 9);
+        ImGui.TableSetupColumn("Updated", ImGuiTableColumnFlags.None, 0, 10);
+        ImGui.TableHeadersRow();
+
+        var sortSpecs = ImGui.TableGetSortSpecs();
+        if (sortSpecs.SpecsCount > 0)
+        {
+            var spec = sortSpecs.Specs[0];
+            tableSortColumn = (int)spec.ColumnUserID;
+            tableSortAscending = spec.SortDirection == ImGuiSortDirection.Ascending;
+            sortSpecs.SpecsDirty = false;
+        }
+
+        rows = SortHousingRows(rows);
+
+        foreach (var row in rows)
+        {
+            var plot = row.Plot;
+            var snapshot = row.Snapshot;
+            ImGui.TableNextRow();
+            ImGui.TableNextColumn(); ImGui.TextUnformatted(snapshot.World.Name);
+            ImGui.TableNextColumn(); ImGui.TextUnformatted(plot.DistrictName);
+            ImGui.TableNextColumn(); ImGui.TextUnformatted(plot.WardNumber?.ToString() ?? "Unknown");
+            ImGui.TableNextColumn(); ImGui.TextUnformatted(plot.PlotNumber?.ToString() ?? "Unknown");
+            ImGui.TableNextColumn(); ImGui.TextUnformatted(FormatHousingSize(plot.Size));
+            ImGui.TableNextColumn(); ImGui.TextUnformatted(plot.Price?.ToString("N0") ?? "Unknown");
+            ImGui.TableNextColumn(); ImGui.TextUnformatted(PaissaHousingPolicy.DescribeEligibility(plot.PurchaseSystem));
+            ImGui.TableNextColumn();
+            var phase = PaissaHousingPolicy.GetPhaseLabel(plot, asOfUtc);
+            var displayedDeadline = PaissaHousingPolicy.GetDisplayedPhaseDeadline(plot, asOfUtc);
+            var freshness = PaissaHousingPolicy.GetSourceFreshness(plot, asOfUtc);
+            ImGui.TextUnformatted(freshness switch
+            {
+                PaissaSourceFreshness.Stale => $"{phase} · Stale",
+                PaissaSourceFreshness.Unknown => $"{phase} · Unknown freshness",
+                _ => phase,
+            });
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.BeginTooltip();
+                ImGui.TextWrapped(PaissaHousingPolicy.GetPhaseExplanation(plot, asOfUtc));
+                if (displayedDeadline != PaissaApiParser.UnixSecondsToUtc(plot.LottoPhaseUntil))
+                    ImGui.TextUnformatted($"PaissaDB deadline: {FormatDeadline(PaissaApiParser.UnixSecondsToUtc(plot.LottoPhaseUntil))}");
+                ImGui.TextUnformatted($"Displayed close: {FormatDeadline(displayedDeadline)}");
+                ImGui.TextUnformatted($"Source freshness: {freshness}");
+                ImGui.EndTooltip();
+            }
+            ImGui.TableNextColumn(); ImGui.TextUnformatted(plot.LottoEntries?.ToString() ?? "Unknown");
+            ImGui.TableNextColumn(); ImGui.TextUnformatted(FormatDeadline(displayedDeadline));
+            if (ImGui.IsItemHovered() && displayedDeadline is { } closesAt)
+            {
+                ImGui.BeginTooltip();
+                var remaining = closesAt - asOfUtc;
+                ImGui.TextUnformatted(remaining > TimeSpan.Zero
+                    ? $"Closes in {FormatRemaining(remaining)}"
+                    : "Closure time has passed.");
+                ImGui.EndTooltip();
+            }
+            ImGui.TableNextColumn(); ImGui.TextUnformatted(FormatUnixSourceTime(plot.LastUpdatedTime));
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.BeginTooltip();
+                ImGui.TextUnformatted($"{snapshot.World.Name} / {plot.DistrictName}");
+                ImGui.TextUnformatted($"IDs: world={plot.WorldId?.ToString() ?? "Unknown"}, district={plot.DistrictId?.ToString() ?? "Unknown"}");
+                ImGui.TextUnformatted($"API address: ward={plot.ApiWardNumber?.ToString() ?? "Unknown"}, plot={plot.ApiPlotNumber?.ToString() ?? "Unknown"}");
+                ImGui.TextUnformatted($"Raw purchase flags: {plot.PurchaseSystem?.ToString() ?? "Unknown"}; raw phase: {plot.LottoPhase?.ToString() ?? "Unknown"}");
+                ImGui.TextUnformatted($"First seen: {FormatUnixSourceTime(plot.FirstSeenTime)}");
+                ImGui.TextUnformatted($"Downloaded: {FormatTimestampForDisplay(snapshot.DownloadedAtUtc, includeSeconds: true)}");
+                if (snapshot.Warnings.Count > 0)
+                    ImGui.TextWrapped($"World response has {snapshot.Warnings.Count} schema warning(s).");
+            ImGui.EndTooltip();
+            }
+        }
+
+        ImGui.EndTable();
+        var worldLabel = selectedHousingWorldIds.Count == 1 ? "world" : "worlds";
+        var summary = $"{rows.Count} plots · {selectedHousingWorldIds.Count} {worldLabel}";
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Math.Max(0f,
+            ImGui.GetContentRegionAvail().X - ImGui.CalcTextSize(summary).X));
+        ImGui.TextUnformatted(summary);
+    }
+
+    private List<(PaissaHousingWorldData Snapshot, PaissaPlotListing Plot)> SortHousingRows(
+        List<(PaissaHousingWorldData Snapshot, PaissaPlotListing Plot)> rows)
+    {
+        IOrderedEnumerable<(PaissaHousingWorldData Snapshot, PaissaPlotListing Plot)> ordered = tableSortColumn switch
+        {
+            1 => Order(rows, row => row.Plot.DistrictName),
+            2 => Order(rows, row => row.Plot.WardNumber ?? int.MaxValue),
+            3 => Order(rows, row => row.Plot.PlotNumber ?? int.MaxValue),
+            4 => Order(rows, row => row.Plot.Size ?? int.MaxValue),
+            5 => Order(rows, row => row.Plot.Price ?? long.MaxValue),
+            6 => Order(rows, row => PaissaHousingPolicy.GetEligibility(row.Plot.PurchaseSystem)),
+            7 => Order(rows, row => PaissaHousingPolicy.GetPhaseFilter(row.Plot, lotterySnapshot?.NowUtc ?? row.Snapshot.DownloadedAtUtc)),
+            8 => Order(rows, row => row.Plot.LottoEntries ?? long.MaxValue),
+            9 => Order(rows, row => row.Plot.LottoPhaseUntil ?? long.MaxValue),
+            10 => Order(rows, row => row.Plot.LastUpdatedTime ?? double.MinValue),
+            _ => Order(rows, row => row.Snapshot.World.Name),
+        };
+        if (!tableSortAscending)
+            ordered = ReverseOrder(rows, tableSortColumn);
+        return ordered.ThenBy(row => row.Snapshot.World.Name)
+            .ThenBy(row => row.Plot.DistrictName)
+            .ThenBy(row => row.Plot.WardNumber ?? int.MaxValue)
+            .ThenBy(row => row.Plot.PlotNumber ?? int.MaxValue)
+            .ToList();
+    }
+
+    private static IOrderedEnumerable<(PaissaHousingWorldData Snapshot, PaissaPlotListing Plot)> Order<TKey>(
+        IEnumerable<(PaissaHousingWorldData Snapshot, PaissaPlotListing Plot)> rows,
+        Func<(PaissaHousingWorldData Snapshot, PaissaPlotListing Plot), TKey> key)
+        => rows.OrderBy(key);
+
+    private static IOrderedEnumerable<(PaissaHousingWorldData Snapshot, PaissaPlotListing Plot)> ReverseOrder(
+        IEnumerable<(PaissaHousingWorldData Snapshot, PaissaPlotListing Plot)> rows, int column)
+        => column switch
+        {
+            1 => rows.OrderByDescending(row => row.Plot.DistrictName),
+            2 => rows.OrderByDescending(row => row.Plot.WardNumber ?? int.MinValue),
+            3 => rows.OrderByDescending(row => row.Plot.PlotNumber ?? int.MinValue),
+            4 => rows.OrderByDescending(row => row.Plot.Size ?? int.MinValue),
+            5 => rows.OrderByDescending(row => row.Plot.Price ?? long.MinValue),
+            6 => rows.OrderByDescending(row => PaissaHousingPolicy.GetEligibility(row.Plot.PurchaseSystem)),
+            7 => rows.OrderByDescending(row => PaissaHousingPolicy.GetPhaseFilter(row.Plot, row.Snapshot.DownloadedAtUtc)),
+            8 => rows.OrderByDescending(row => row.Plot.LottoEntries ?? long.MinValue),
+            9 => rows.OrderByDescending(row => row.Plot.LottoPhaseUntil ?? long.MinValue),
+            10 => rows.OrderByDescending(row => row.Plot.LastUpdatedTime ?? double.MinValue),
+            _ => rows.OrderByDescending(row => row.Snapshot.World.Name),
+        };
+
+    private static string FormatHousingSize(int? size) => size switch
+    {
+        0 => "Small",
+        1 => "Medium",
+        2 => "Large",
+        null => "Unknown",
+        _ => $"Unknown ({size})",
+    };
+
+    private string FormatDeadline(DateTimeOffset? deadline)
+        => deadline is { } timestamp ? FormatTimestampForDisplay(timestamp) : "Unknown";
+
+    private string FormatUnixSourceTime(double? timestamp)
+        => PaissaApiParser.UnixSecondsToUtc(timestamp) is { } utc
+            ? FormatTimestampForDisplay(utc)
+            : "Unknown";
+
+    private string FormatTimestampForDisplay(DateTimeOffset utc, bool includeSeconds = false)
+    {
+        if (configuration.DisplayLotteryTimesInUtc)
+            return utc.ToUniversalTime().ToString(includeSeconds ? "MMM d HH:mm:ss 'UTC'" : "MMM d HH:mm 'UTC'");
+
+        return TimeZoneInfo.ConvertTime(utc, TimeZoneInfo.Local)
+            .ToString(includeSeconds ? "MMM d HH:mm:ss" : "MMM d HH:mm");
+    }
+
+    private static void DrawPlaceholder()
+        => ImGui.TextWrapped("This section is planned but not implemented yet. PlotWatch will not display fabricated housing or lottery data.");
 
     private void DrawSettings()
     {
@@ -185,8 +821,10 @@ public sealed class MainWindow : Window
         var currentName = ((PlotWatchTab)currentTab).ToString();
         if (ImGui.BeginCombo("##default-tab", currentName))
         {
-            foreach (var tab in Enum.GetValues<PlotWatchTab>())
-            {
+        foreach (var tab in Enum.GetValues<PlotWatchTab>())
+        {
+                if (tab == PlotWatchTab.Sweeps)
+                    continue;
                 var selected = currentTab == (int)tab;
                 if (ImGui.Selectable(tab.ToString(), selected))
                 {
@@ -231,7 +869,7 @@ public sealed class MainWindow : Window
         }
 
         var displayUtc = configuration.DisplayLotteryTimesInUtc;
-        if (ImGui.Checkbox("Display lottery schedule in UTC", ref displayUtc))
+        if (ImGui.Checkbox("Display times in UTC", ref displayUtc))
         {
             configuration.DisplayLotteryTimesInUtc = displayUtc;
             saveConfiguration();

@@ -3,12 +3,15 @@ using PlotWatch.Diagnostics;
 using PlotWatch.Commands;
 using PlotWatch.Windows;
 using PlotWatch.Lottery;
+using PlotWatch.Paissa;
+using System.Net;
 
 var tests = new (string Name, Action Test)[]
 {
     ("configuration defaults are safe", ConfigurationDefaults),
     ("configuration normalization migrates and clamps values", ConfigurationNormalization),
     ("configuration normalization repairs invalid tab", InvalidDefaultTab),
+    ("removed unknown housing filters migrate out of saved preferences", RemovedUnknownHousingFilters),
     ("configuration migration preserves settings and defaults to local time", TimeDisplayMigration),
     ("reset restores configuration defaults", ResetConfiguration),
     ("reset cancellation does not invoke destructive action", ResetCancellation),
@@ -21,6 +24,8 @@ var tests = new (string Name, Action Test)[]
     ("diagnostic history is bounded and keeps newest entries", DiagnosticHistoryBound),
     ("clearing history removes retained entries", ClearDiagnosticHistory),
     ("per-action results retain findings independently", DiagnosticRunsRetainFindings),
+    ("PaissaDB diagnostic failures preserve last successful data", PaissaDiagnosticsRetainLastGood),
+    ("removed Sweeps default migrates without shifting tab values", RemovedSweepsTabMigration),
     ("lottery schedule classifies exact phase boundaries", LotteryBoundaries),
     ("lottery schedule handles pre-anchor dates", LotteryBeforeAnchor),
     ("lottery period cards select active and next occurrences", LotteryPeriodOccurrences),
@@ -28,6 +33,21 @@ var tests = new (string Name, Action Test)[]
     ("Central local display applies daylight-saving transition", CentralDaylightSaving),
     ("local timezone label refreshes its numeric offset", LocalZoneLabel),
     ("lottery countdown formats and recalculates after clock changes", LotteryCountdown),
+    ("PaissaDB world list parses identifiers and data centers", PaissaWorldParsing),
+    ("PaissaDB inspection reports fields, nulls, missing values, and samples", PaissaInspection),
+    ("PaissaDB enum and timestamp decoding preserves unknown values", PaissaValueDecoding),
+    ("empty API listing differs from failed request", PaissaEmptyVersusFailure),
+    ("malformed API payload is reported as parse failure", PaissaMalformedResponse),
+    ("PaissaDB parser keeps every plot and normalizes one-based address", PaissaFullListings),
+    ("empty world listings are a valid zero-plot response", PaissaEmptyWorld),
+    ("housing phases infer Results only within matching cycle", PaissaPhaseFreshness),
+    ("housing checkbox filters require a checked category match", PaissaHousingFiltersWork),
+    ("housing eligibility display omits lottery entry flags", PaissaEligibilityLabels),
+    ("housing freshness follows lottery phase age", PaissaCycleFreshness),
+    ("PaissaDB client honors 429 retry-after cooldown", PaissaRetryAfter),
+    ("PaissaDB cooldown wait can be cancelled", PaissaCooldownCancellation),
+    ("PaissaDB requests use conservative spacing", PaissaRequestSpacing),
+    ("PaissaDB cooldown extension delays requests already waiting", PaissaCooldownRace),
 };
 
 var failures = 0;
@@ -84,6 +104,20 @@ static void InvalidDefaultTab()
     Equal((int)PlotWatchTab.Dashboard, config.DefaultTab);
 }
 
+static void RemovedUnknownHousingFilters()
+{
+    var config = new Configuration
+    {
+        HousingDistrictIds = [339, -1],
+        HousingSizeMask = 15,
+        HousingEligibilityMask = 15,
+    };
+    config.Normalize();
+    Equal(true, config.HousingDistrictIds.SequenceEqual(new[] { 339 }));
+    Equal(7, config.HousingSizeMask);
+    Equal(7, config.HousingEligibilityMask);
+}
+
 static void TimeDisplayMigration()
 {
     var config = new Configuration
@@ -100,6 +134,11 @@ static void TimeDisplayMigration()
     Equal(116f, config.TextScalePercent);
     Equal(false, config.DisplayLotteryTimesInUtc);
     Equal(false, config.ChatNotificationsEnabled);
+
+    var nextRefresh = DateTimeOffset.UtcNow.AddHours(1);
+    config.HousingNextAutomaticRefreshUtc = nextRefresh;
+    config.Normalize();
+    Equal(nextRefresh, config.HousingNextAutomaticRefreshUtc);
 }
 
 static void ResetConfiguration()
@@ -121,6 +160,7 @@ static void ResetConfiguration()
     Equal(true, config.ChatNotificationsEnabled);
     Equal(true, config.ToastNotificationsEnabled);
     Equal(false, config.SoundNotificationsEnabled);
+    Equal(default(DateTimeOffset), config.HousingNextAutomaticRefreshUtc);
 }
 
 static void ResetCancellation()
@@ -285,6 +325,27 @@ static void DiagnosticRunsRetainFindings()
     Equal("Lifestream detected", diagnostics.Runs[1].Findings.Single().Message);
 }
 
+static void PaissaDiagnosticsRetainLastGood()
+{
+    var diagnostics = NewDiagnostics();
+    var world = new PaissaWorld(63, "Gilgamesh", 4, "Aether");
+    var successTime = DateTimeOffset.UtcNow;
+    diagnostics.SetPaissaWorlds([world], "HTTP 200", successTime);
+    diagnostics.SetPaissaWorlds(null, "HTTP 503; cached result retained");
+    Equal(1, diagnostics.PaissaWorlds.Count);
+    Equal("Gilgamesh", diagnostics.PaissaWorlds[0].Name);
+    Equal("HTTP 503; cached result retained", diagnostics.PaissaWorldsStatus);
+    Equal(successTime, diagnostics.PaissaWorldsLastSuccessUtc);
+}
+
+static void RemovedSweepsTabMigration()
+{
+    var config = new Configuration { DefaultTab = (int)PlotWatchTab.Sweeps };
+    config.Normalize();
+    Equal((int)PlotWatchTab.Dashboard, config.DefaultTab);
+    Equal(5, (int)PlotWatchTab.Settings);
+}
+
 static void LotteryBoundaries()
 {
     var anchor = LotterySchedule.ApplicationAnchorUtc;
@@ -369,6 +430,219 @@ static void LotteryCountdown()
     Equal(LotterySchedule.ApplicationLength, jumped.Remaining);
 }
 
+static void PaissaWorldParsing()
+{
+    const string json = """[{"id":63,"name":"Gilgamesh","datacenter_id":4,"datacenter_name":"Aether"}]""";
+    var worlds = PaissaApiParser.ParseWorlds(json);
+    Equal(1, worlds.Count);
+    Equal(63, worlds[0].Id);
+    Equal("Gilgamesh", worlds[0].Name);
+    Equal("Aether", worlds[0].DataCenterName);
+}
+
+static void PaissaInspection()
+{
+    const string json = """{"id":63,"name":"Gilgamesh","num_open_plots":1,"oldest_plot_time":1793152763.4,"districts":[{"id":339,"name":"Mist","num_open_plots":1,"oldest_plot_time":1793152763.4,"open_plots":[{"world_id":63,"district_id":339,"ward_number":4,"plot_number":18,"size":2,"price":47500000,"last_updated_time":1793295771.4,"first_seen_time":1793273173.8,"est_time_open_min":0,"est_time_open_max":0,"purchase_system":5,"lotto_entries":null,"lotto_phase":2,"lotto_phase_until":1793545200},{"ward_number":1,"plot_number":2,"price":100}]}]}""";
+    var report = PaissaApiParser.InspectWorld(json, 1);
+    Equal("Gilgamesh", report.Name);
+    Equal(1, report.Districts.Count);
+    Equal(2, report.Districts[0].ActualPlotCount);
+    Equal(1, report.Samples.Count);
+    Equal(4, report.Samples[0].WardNumber);
+    Equal(18, report.Samples[0].PlotNumber);
+    Equal(2, report.Samples[0].Size);
+    Equal(null, report.Samples[0].LottoEntries);
+    Equal(2, report.Listings.Count);
+    Equal(5, report.Listings[0].WardNumber);
+    Equal(19, report.Listings[0].PlotNumber);
+
+    var entries = report.Fields.Single(field => field.Name == "lotto_entries");
+    Equal(1, entries.PresentCount);
+    Equal(1, entries.NullCount);
+    Equal(1, entries.MissingCount);
+    var size = report.Fields.Single(field => field.Name == "size");
+    Equal(1, size.PresentCount);
+    Equal(1, size.MissingCount);
+    var phaseUntil = report.Fields.Single(field => field.Name == "lotto_phase_until");
+    Equal(1, phaseUntil.MissingCount);
+}
+
+static void PaissaFullListings()
+{
+    var plots = string.Join(",", Enumerable.Range(0, 12).Select(index =>
+        $"{{\"world_id\":63,\"district_id\":339,\"ward_number\":0,\"plot_number\":{index},\"size\":0,\"price\":100,\"last_updated_time\":1793295771,\"first_seen_time\":1793273173,\"purchase_system\":1}}"));
+    var json = $"{{\"id\":63,\"name\":\"Gilgamesh\",\"num_open_plots\":12,\"oldest_plot_time\":1793273173,\"districts\":[{{\"id\":339,\"name\":\"Mist\",\"num_open_plots\":12,\"oldest_plot_time\":1793273173,\"open_plots\":[{plots}]}}]}}";
+    var inspection = PaissaApiParser.InspectWorld(json);
+    Equal(12, inspection.Listings.Count);
+    Equal(8, inspection.Samples.Count);
+    Equal(12, inspection.Districts[0].ActualPlotCount);
+    Equal(0, inspection.Warnings.Count);
+}
+
+static void PaissaEmptyWorld()
+{
+    const string json = """{"id":63,"name":"Gilgamesh","num_open_plots":0,"oldest_plot_time":0,"districts":[]}""";
+    var inspection = PaissaApiParser.InspectWorld(json);
+    Equal(0, inspection.Listings.Count);
+    Equal(0, inspection.Warnings.Count);
+}
+
+static void PaissaPhaseFreshness()
+{
+    var entryDeadline = new DateTimeOffset(2026, 11, 6, 15, 0, 0, TimeSpan.Zero);
+    var now = entryDeadline.AddDays(1);
+    var reportedEntry = new PaissaPlotListing(63, 339, "Mist", 0, 0, 1, 1, 0, 100, 1, 2, 1,
+        entryDeadline.ToUnixTimeSeconds(), null, null, null, null);
+    Equal("Results", PaissaHousingPolicy.GetPhaseLabel(reportedEntry, now));
+    Equal(new DateTimeOffset(2026, 11, 10, 15, 0, 0, TimeSpan.Zero),
+        PaissaHousingPolicy.GetDisplayedPhaseDeadline(reportedEntry, now));
+    Equal("Results", PaissaHousingPolicy.GetPhaseLabel(reportedEntry with { LottoPhase = 2 }, now));
+    Equal("Entry", PaissaHousingPolicy.GetPhaseLabel(reportedEntry with { LottoPhaseUntil = now.AddDays(1).ToUnixTimeSeconds() }, now));
+    Equal("Unknown", PaissaHousingPolicy.GetPhaseLabel(reportedEntry with { LottoPhaseUntil = entryDeadline.AddDays(-9).ToUnixTimeSeconds() }, now));
+    Equal("Unknown", PaissaHousingPolicy.GetPhaseLabel(reportedEntry with { LottoPhase = null }, now));
+    Equal(PaissaPhaseFilter.Results, PaissaHousingPolicy.GetPhaseFilter(reportedEntry, now));
+}
+
+static void PaissaHousingFiltersWork()
+{
+    var now = DateTimeOffset.FromUnixTimeSeconds(1_793_400_000);
+    var plot = new PaissaPlotListing(63, 339, "Mist", 0, 0, 1, 1, 1, 2_000_000, 5, null, 2,
+        1_793_500_000, null, null, null, null);
+    var all = new PaissaHousingFilters(
+        new HashSet<int?> { 339 }, new HashSet<int?> { 0, 1, 2, null },
+        Enum.GetValues<PaissaEligibilityFilter>().ToHashSet(),
+        Enum.GetValues<PaissaPhaseFilter>().Where(phase => phase != PaissaPhaseFilter.Any).ToHashSet());
+    Equal(true, PaissaHousingPolicy.Matches(plot, all, now));
+    Equal(true, PaissaHousingPolicy.Matches(plot, all with
+    {
+        Eligibility = new HashSet<PaissaEligibilityFilter> { PaissaEligibilityFilter.Personal },
+    }, now));
+    Equal(false, PaissaHousingPolicy.Matches(plot, all with
+    {
+        Eligibility = new HashSet<PaissaEligibilityFilter> { PaissaEligibilityFilter.FreeCompany },
+    }, now));
+    Equal(true, PaissaHousingPolicy.Matches(plot with { LottoEntries = null }, all, now));
+    Equal(false, PaissaHousingPolicy.Matches(plot, all with { Sizes = new HashSet<int?>() }, now));
+}
+
+static void PaissaEligibilityLabels()
+{
+    Equal("FC", PaissaHousingPolicy.DescribeEligibility(3));
+    Equal("Personal", PaissaHousingPolicy.DescribeEligibility(5));
+    Equal("Personal & FC", PaissaHousingPolicy.DescribeEligibility(7));
+    Equal("Unknown", PaissaHousingPolicy.DescribeEligibility(null));
+}
+
+static void PaissaCycleFreshness()
+{
+    var now = new DateTimeOffset(2026, 11, 7, 15, 0, 0, TimeSpan.Zero);
+    var updated = now.AddHours(-1).ToUnixTimeMilliseconds() / 1000d;
+    var plot = new PaissaPlotListing(63, 339, "Mist", 0, 0, 1, 1, 0, 100, 1, 0, 3,
+        null, null, updated, null, null);
+    Equal(PaissaSourceFreshness.Current, PaissaHousingPolicy.GetSourceFreshness(plot, now));
+    Equal(PaissaSourceFreshness.Current, PaissaHousingPolicy.GetSourceFreshness(plot with
+    {
+        LastUpdatedTime = new DateTimeOffset(2026, 11, 6, 16, 0, 0, TimeSpan.Zero).ToUnixTimeSeconds(),
+    }, now));
+    Equal(PaissaSourceFreshness.Stale, PaissaHousingPolicy.GetSourceFreshness(plot with
+    {
+        LastUpdatedTime = new DateTimeOffset(2026, 11, 1, 14, 0, 0, TimeSpan.Zero).ToUnixTimeSeconds(),
+    }, now));
+    Equal(PaissaSourceFreshness.Unknown, PaissaHousingPolicy.GetSourceFreshness(plot with { LastUpdatedTime = null }, now));
+    Equal(PaissaSourceFreshness.Unknown, PaissaHousingPolicy.GetSourceFreshness(plot with
+    {
+        LastUpdatedTime = now.AddMinutes(6).ToUnixTimeSeconds(),
+    }, now));
+}
+
+static void PaissaRetryAfter()
+{
+    var handler = new RetryAfterHandler(TimeSpan.FromSeconds(30));
+    using var client = new PaissaApiClient(handler);
+    var response = client.GetWorldsAsync().GetAwaiter().GetResult();
+    Equal(false, response.IsSuccess);
+    Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
+    Equal(true, response.RetryAfterUtc > DateTimeOffset.UtcNow.AddSeconds(20));
+    Equal(true, client.CooldownUntilUtc > DateTimeOffset.UtcNow.AddSeconds(20));
+}
+
+static void PaissaCooldownCancellation()
+{
+    var handler = new RetryAfterHandler(TimeSpan.FromSeconds(5));
+    using var client = new PaissaApiClient(handler);
+    client.GetWorldsAsync().GetAwaiter().GetResult();
+    using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+    var started = DateTimeOffset.UtcNow;
+    var result = client.GetWorldsAsync(cancellation.Token).GetAwaiter().GetResult();
+    Equal(false, result.IsSuccess);
+    Equal(true, result.Error!.Contains("cancelled", StringComparison.OrdinalIgnoreCase));
+    Equal(true, DateTimeOffset.UtcNow - started < TimeSpan.FromSeconds(2));
+}
+
+static void PaissaRequestSpacing()
+{
+    Equal(10, (int)PaissaApiClient.DefaultMinimumRequestInterval.TotalSeconds);
+    var handler = new TimestampHandler();
+    using var client = new PaissaApiClient(handler, TimeSpan.FromMilliseconds(80));
+    client.GetWorldsAsync().GetAwaiter().GetResult();
+    client.GetWorldsAsync().GetAwaiter().GetResult();
+    Equal(2, handler.RequestTimes.Count);
+    Equal(true, handler.RequestTimes[1] - handler.RequestTimes[0] >= TimeSpan.FromMilliseconds(60));
+}
+
+static void PaissaCooldownRace()
+{
+    var handler = new CooldownRaceHandler(TimeSpan.FromMilliseconds(350));
+    using var client = new PaissaApiClient(handler, TimeSpan.FromMilliseconds(100));
+    Task.WhenAll(client.GetWorldsAsync(), client.GetWorldsAsync()).GetAwaiter().GetResult();
+    Equal(2, handler.RequestTimes.Count);
+    Equal(true, handler.RequestTimes[1] - handler.RequestTimes[0] >= TimeSpan.FromMilliseconds(300));
+}
+
+static void PaissaValueDecoding()
+{
+    Equal("Lottery + Personal", PaissaApiParser.DescribePurchaseSystem(5));
+    Equal("Unrecognized (99)", PaissaApiParser.DescribePurchaseSystem(99));
+    Equal("Available", PaissaApiParser.DescribeLotteryPhase(1));
+    Equal("Unknown / not reported", PaissaApiParser.DescribeLotteryPhase(null));
+    Equal(1_793_295_771_400L, PaissaApiParser.UnixSecondsToUtc(1_793_295_771.4)!.Value.ToUnixTimeMilliseconds());
+    Equal(null, PaissaApiParser.UnixSecondsToUtc(double.NaN));
+}
+
+static void PaissaEmptyVersusFailure()
+{
+    using var emptyClient = new PaissaApiClient(new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+    {
+        Content = new StringContent("[]"),
+    }));
+    var empty = emptyClient.GetWorldsAsync().GetAwaiter().GetResult();
+    Equal(true, empty.IsSuccess);
+    Equal(0, empty.Data!.Count);
+
+    using var failedClient = new PaissaApiClient(new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+    {
+        ReasonPhrase = "Unavailable",
+        Content = new StringContent("maintenance"),
+    }));
+    var failed = failedClient.GetWorldsAsync().GetAwaiter().GetResult();
+    Equal(false, failed.IsSuccess);
+    Equal(HttpStatusCode.ServiceUnavailable, failed.StatusCode);
+    Equal(null, failed.Data);
+    Equal(true, failed.Error!.Contains("503", StringComparison.Ordinal));
+}
+
+static void PaissaMalformedResponse()
+{
+    using var client = new PaissaApiClient(new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+    {
+        Content = new StringContent("{not json"),
+    }));
+    var result = client.GetWorldsAsync().GetAwaiter().GetResult();
+    Equal(false, result.IsSuccess);
+    Equal(HttpStatusCode.OK, result.StatusCode);
+    Equal(true, result.Error!.StartsWith("Response parse failed:", StringComparison.Ordinal));
+}
+
 static PluginDiagnostics NewDiagnostics() => new("Loaded", () => true, "test-version", "test-build");
 
 static OwnedCommandRegistration CreateRegistration(FakeCommandRegistry registry, string name, object handler)
@@ -405,4 +679,52 @@ sealed class FakeCommandRegistry
     public void Replace(string command, object handler) => handlers[command] = handler;
 
     public void Remove(string command) => handlers.Remove(command);
+}
+
+sealed class FakeHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        => Task.FromResult(respond(request));
+}
+
+sealed class RetryAfterHandler(TimeSpan retryAfter) : HttpMessageHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+        {
+            Content = new StringContent("rate limited"),
+        };
+        response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(retryAfter);
+        return Task.FromResult(response);
+    }
+}
+
+sealed class TimestampHandler : HttpMessageHandler
+{
+    public List<DateTimeOffset> RequestTimes { get; } = [];
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        RequestTimes.Add(DateTimeOffset.UtcNow);
+        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("[]") });
+    }
+}
+
+sealed class CooldownRaceHandler(TimeSpan retryAfter) : HttpMessageHandler
+{
+    private int requestCount;
+    public List<DateTimeOffset> RequestTimes { get; } = [];
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        RequestTimes.Add(DateTimeOffset.UtcNow);
+        var number = Interlocked.Increment(ref requestCount);
+        var response = number == 1
+            ? new HttpResponseMessage(HttpStatusCode.TooManyRequests) { Content = new StringContent("rate limited") }
+            : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("[]") };
+        if (number == 1)
+            response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(retryAfter);
+        return Task.FromResult(response);
+    }
 }

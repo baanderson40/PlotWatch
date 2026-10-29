@@ -1,10 +1,10 @@
 # PlotWatch — Product Specification and Implementation Plan
 
-Dalamud plugin for FFXIV housing lottery tracking, available-plot discovery, alerts, and PaissaDB-contributing ward sweeps.
+Dalamud plugin for FFXIV housing lottery tracking, available-plot discovery, alerts, and bid records.
 
 Commands: `/plotwatch` and `/pw`.
 
-> **Status:** Phases 1–2 implemented; Release build and offline tests pass. Phase 2 still needs in-game dashboard validation. Bid tracking, PaissaDB access, alerts, integrations, and sweeps are not implemented yet.
+> **Status:** Phases 1–2 implemented; Release build and offline tests pass. Phase 2 schedule/dashboard validated in-game; visual polish deferred. PaissaDB browsing, bid tracking, and alerts remain unimplemented. Sweep automation and local housing capture are out of scope.
 
 ## Product specification
 
@@ -13,8 +13,10 @@ Commands: `/plotwatch` and `/pw`.
 - Track housing lottery application/results periods and per-character bids.
 - Show crowdsourced available houses from PaissaDB (`https://paissadb.zhu.codes`).
 - Alert on matching open plots and important bid/result deadlines.
-- Automate ward-menu review sweeps to contribute observed housing data through the optional PaissaHouse plugin.
-- Work as a standalone plugin for tracking and browsing; PaissaHouse is required only for the planned contribution sweep flow.
+- Use PaissaDB API as the source for available-house listings.
+- Track placed bids per character.
+- Keep any travel to wards/plots tentative and user-triggered through optional Lifestream integration.
+- Do not capture or persist housing data locally; do not automate sweeps or ward selection.
 
 ### Lottery schedule
 
@@ -48,42 +50,19 @@ Commands: `/plotwatch` and `/pw`.
 - Watch rules alert on matching plots. Acknowledge/Seen suppresses repeats until plot is observed closed and reopens.
 - Refresh on a configurable interval and on demand. Use bounded requests, timeout, backoff, and cache last successful response.
 - Never present API failure or missing fields as “no houses”; show unavailable/stale state and retain last successful data with its timestamp.
-- Do not maintain a separate durable local copy of housing inventory. Temporary API cache and in-progress sweep state are acceptable.
+- PaissaDB API is the sole source for housing listings. Keep only a temporary last-successful response cache; do not capture ward data or maintain a durable local housing inventory.
 
-### Ward sweeps and contributions
+### Travel actions (tentative)
 
-Sweeps exist primarily to contribute ward observations to PaissaDB. PlotWatch does not claim sweep data was uploaded unless integration provides an explicit acknowledgment.
-
-Planned dependencies:
-
-- **PaissaHouse:** optional companion plugin and required for starting contribution sweeps. It observes and submits housing data. Validate compatibility with automated menu cycling and avoid duplicating uploads.
-- **Lifestream:** optional for tracking/browser features; required for automatic travel between cities during a multi-district sweep.
-- **vnavmesh:** planned navigation dependency for reaching city aetherytes when not already in interaction range.
-
-Sweep flow:
-
-1. User chooses district(s) and ward(s)/range; default is current district and all its wards.
-2. Validate required plugins and current game state before starting.
-3. Lifestream travels to the selected major city; PlotWatch waits for arrival and safe state.
-4. vnavmesh approaches the correct city aetheryte if needed.
-5. PlotWatch targets/interacts with the aetheryte and navigates **Residential District Aethernet → Go to Specified Ward (Review Tabs)**.
-6. Cycle selected ward tabs, waiting for the corresponding ward observation before advancing.
-7. Repeat for requested districts/cities, then show completed, skipped, timed-out, and unverified wards.
-
-Controls and safeguards:
-
-- Manual start; visible progress; pause/resume/cancel.
-- Require PaissaHouse availability before starting; clearly report the missing dependency. No misleading local-only “contribution sweep” mode.
-- Validate target, menu state, selected ward, and observed response at every stage; no fixed-delay-only success assumptions.
-- Bounded retries and timeouts. Stop or pause safely on unexpected UI, combat, logout, territory change, user cancellation, unavailable travel, or missing observations.
-- Never count a ward as complete without seeing its corresponding data. If PaissaHouse exposes no upload acknowledgment, report “observed; upload status unknown,” not “uploaded.”
-- No automatic lottery entry, bid placement, purchase confirmation, or refund collection.
-- Keep navigation and UI automation opt-in, transparent, and subject to current FFXIV/Dalamud rules. Validate in-game; automation can carry account risk.
+- Optional, user-triggered Lifestream travel from available-house and bid rows to a selected ward/plot may be explored later.
+- No automatic ward selection, review-tab cycling, sweep, local ward-data capture, bidding, claiming, or refund collection.
+- Treat travel as a separate integration feature; keep core API browsing and bid tracking usable when Lifestream is absent.
+- Validate Lifestream IPC, readiness/busy/error signals, cancellation, and destination parsing before implementation. Do not assume undocumented contracts.
 
 ### Notifications and travel actions
 
 - Chat and toast notifications are configurable; optional sound is off by default.
-- Optional Lifestream travel actions from bid rows and matching available-house alerts.
+- Optional, user-triggered Lifestream travel actions from bid rows and available-house listings remain tentative.
 - Hide or disable integration actions when the relevant plugin is missing or busy. Never make optional integrations a requirement for core tracking.
 
 ### Main UI
@@ -92,8 +71,7 @@ Controls and safeguards:
 2. **Available Houses:** PaissaDB listings, filters, sorting, source freshness, optional travel action.
 3. **My Bids:** per-character bid history and outcomes; add/edit/recover, travel, character exclude/remove.
 4. **Alerts:** watch rules, matching plots, acknowledge/Seen, refresh controls.
-5. **Sweeps:** plugin readiness, city/district/ward selection, progress, pause/resume/cancel, final status summary.
-6. **Settings:** refresh/notification preferences, column visibility/order, integration status, character management, diagnostics.
+5. **Settings:** refresh/notification preferences, column visibility/order, integration status, character management, diagnostics.
 
 ### Architecture direction
 
@@ -102,9 +80,8 @@ Controls and safeguards:
 - `Lottery/`: pure schedule/cycle policy and bid state transitions.
 - `Paissa/`: typed API client, DTOs, cache, error/staleness state.
 - `Game/`: English chat/status/placard observation boundaries; framework-thread access only.
-- `Integrations/`: narrow IPC clients for PaissaHouse, Lifestream, and vnavmesh; optional dependency checks.
-- `Sweeps/`: explicit state machine for travel, navigation, menu interaction, ward observations, pause/cancel, and recovery.
-- `Windows/`: dashboard, houses, bids, alerts, sweep, settings.
+- `Integrations/`: narrow optional IPC clients, initially Lifestream only if tentative travel is approved.
+- `Windows/`: dashboard, houses, bids, alerts, settings.
 - Keep schedule and filtering logic pure and testable. Keep native/game/UI/IPC reads on Dalamud framework updates, not ImGui rendering or arbitrary background tasks.
 - Use `IPluginLog`; log state transitions and failures without exposing character Content IDs.
 
@@ -116,7 +93,7 @@ Controls and safeguards:
 
 **Deliverables**
 
-- Main window with Dashboard, Houses, Bids, Alerts, Sweeps, and Settings tabs.
+- Main window with Dashboard, Houses, Bids, Alerts, and Settings tabs.
 - Bug-icon title-bar button opens a separate diagnostics window with left navigation and right action/results panel.
 - Diagnostics actions are explicit, queued, read-only checks; results appear in the window and `IPluginLog.Debug` output. Warnings/errors use corresponding log levels.
 - Debug sections cover overview, configuration, commands/UI lifecycle, dependency metadata, and bounded session history.
@@ -138,7 +115,7 @@ Controls and safeguards:
 
 ### Phase 2 — Lottery clock and dashboard
 
-**Status:** Implemented; Release build and schedule tests pass. In-game dashboard/timezone validation remains pending.
+**Status:** Implemented; Release build and schedule tests pass. User validated schedule and dashboard in-game; visual polish deferred.
 
 **Deliverables**
 
@@ -153,7 +130,27 @@ Controls and safeguards:
 - Exact phase boundaries, cycle rollover, dates before anchor, timezone conversion, and daylight-saving transitions.
 - Countdown refresh after system clock adjustment and plugin reload.
 
-### Phase 3 — Character management and bid records
+### Phase 3 — PaissaDB house browser
+
+**Status:** API diagnostic probe and one-world browser MVP implemented; production API/UI validation remains pending. Multi-world filters, ward/plot ranges, and saved browser preferences remain.
+
+**Deliverables**
+
+- Begin with explicit, read-only diagnostics for `/worlds`, `/worlds/{worldId}`, and `/openapi.json`; use live responses to confirm the browser's fields and unknown/null behavior.
+- Typed client verified against live `https://paissadb.zhu.codes/openapi.json` and API responses.
+- Query world/district listing data; centralize conversion from zero-based API ward/plot numbering.
+- Show address, size, price, purchase restrictions, lottery phase, entrant count when reported, and source freshness.
+- Filters for region/DC/world/district/ward/plot ranges/size/price/purchase type, sorting, manual refresh.
+- Bounded concurrency, cancellation, timeouts, backoff, and last-successful temporary response cache.
+
+**Rules and acceptance**
+
+- PaissaDB API is authoritative for listings; no local ward-data capture or durable housing inventory.
+- Unknown entrant count is not zero. API failure is not “no houses.”
+- Cached listings remain visible with stale status and last-success timestamp.
+- API errors and partial responses are visible; opening UI does not cause request bursts.
+
+### Phase 4 — Character management and bid records
 
 **Deliverables**
 
@@ -170,12 +167,12 @@ Controls and safeguards:
 - Unknown data remains unknown. Records survive restart; duplicate observations do not create duplicate bids.
 - Persistence errors show recovery guidance rather than silently losing data.
 
-### Phase 4 — Passive bid capture and results
+### Phase 5 — Passive bid capture and results
 
 **Deliverables**
 
 - Capture English bid-confirmation messages passively.
-- Recover existing bids from Housing Lottery Status and enrich an already known bid from its placard.
+- Recover existing bids from Housing Lottery Status and enrich a known bid from its placard.
 - Unrelated placard browsing never creates bid records.
 - Outcomes: Pending, Won, Lost, Claimed. Capture results and claim reminders when evidence supports them.
 - Game-observed deadlines override calculated estimates; ticket number remains editable if unavailable.
@@ -185,23 +182,6 @@ Controls and safeguards:
 - Duplicate messages/placard visits, missing ticket/deadline, different characters/cycles, and mismatched plot/world.
 - Results becoming available without an observed outcome.
 - No false Won/Lost transitions from generic placard text; results-period start alone never marks a bid Lost.
-
-### Phase 5 — PaissaDB house browser
-
-**Deliverables**
-
-- Typed client verified against live `https://paissadb.zhu.codes/openapi.json` and API responses.
-- Query world/district listing data; centralize conversion from zero-based API ward/plot numbering.
-- Show address, size, price, purchase restrictions, lottery phase, entrant count when reported, and source freshness.
-- Filters for region/DC/world/district/ward/plot ranges/size/price/purchase type, with sorting and manual refresh.
-- Bounded concurrency, cancellation, timeouts, backoff, and last-successful temporary response cache.
-
-**Rules and acceptance**
-
-- No durable independent local housing inventory; temporary API cache is acceptable.
-- Unknown entrant count is not zero. API failure is not “no houses.”
-- Cached listings remain visible with stale status and last-success timestamp.
-- API errors and partial responses are visible; opening UI does not cause request bursts.
 
 ### Phase 6 — Watchlists and notifications
 
@@ -218,84 +198,29 @@ Controls and safeguards:
 - Failed/partial refreshes cannot prove closure or trigger false reopen alerts.
 - Deduplicate notifications across refreshes and plugin reloads.
 
-### Phase 7 — Integration validation
+### Phase 7 — Integration validation (tentative travel)
 
 | Integration | Required for |
 | --- | --- |
-| PaissaHouse | Starting contribution sweeps |
-| Lifestream | Automatic travel between cities; optional plot travel from bid/listing rows |
-| vnavmesh (planned) | Approaching city aetherytes when outside interaction range |
+| Lifestream | Optional user-triggered travel to a ward/plot from bid/listing rows |
 
 **Deliverables**
 
-- Verify current IPC contracts, readiness/busy/error signals, cancellation, and ownership semantics; do not assume undocumented APIs.
-- Narrow optional integration clients and show dependency status in UI.
-- Verify PaissaHouse observes ward-menu automation and determine whether upload acknowledgment is exposed.
-- Verify Lifestream arrival locations and interaction range at each supported city.
+- Verify Lifestream IPC contract, readiness/busy/error signals, cancellation, and destination semantics; do not assume undocumented APIs.
+- Implement narrow optional integration client and show dependency status in UI only if travel is approved.
+- Verify destination behavior and safety before enabling travel actions.
 
 **Acceptance / decision gate**
 
-- Missing providers disable only dependent actions; core tracking/browsing remain usable.
-- Sweeps are blocked without PaissaHouse. Never claim an upload without acknowledgment.
-- If no upload acknowledgment exists, report the strongest verified state, e.g. “observed; upload status unknown.” Document findings before sweep implementation.
+- Missing Lifestream disables only travel actions; browsing and bid tracking remain usable.
+- Travel remains user-triggered; no ward-menu automation or sweep behavior is added.
 
-### Phase 8 — Single-district contribution sweep
-
-Start with the user already at an open ward-selection menu to validate observation and contribution behavior independently from travel/navigation.
+### Phase 8 — Release hardening
 
 **Deliverables**
 
-- Select district and ward(s)/range; default to current district and all its wards.
-- State machine: `Validate → Select ward → Await matching observation → Advance → Summarize`.
-- Manual start, progress, pause/resume, cancel, per-step timeout, and bounded retries.
-- Temporary progress only; no durable local plot inventory.
-
-**Rules and acceptance**
-
-- Ward count comes from verified menu/game data where possible.
-- Never mark ward complete from elapsed time alone; correlate observation to selected world/district/ward.
-- Report observed, upload-confirmed/unknown, skipped, timed-out, and unverified separately.
-- Unexpected UI or missing data pauses/stops safely and never appears as success.
-
-### Phase 9 — City interaction and navigation
-
-**Deliverables**
-
-- Resolve correct city aetheryte; use vnavmesh to approach when needed.
-- Confirm player readiness and interaction range; target/interact with the aetheryte.
-- Navigate **Residential District Aethernet → Go to Specified Ward (Review Tabs)**.
-- Validate target and menu at each transition; handle verified city-specific differences.
-
-**State flow:** `Validate → Approach → Interact → Validate menu → Open ward review → Sweep`.
-
-**Acceptance**
-
-- Test representative arrival positions in every supported city.
-- Wrong target/menu never triggers blind follow-up clicks.
-- Unreachable target times out; cancellation releases only PlotWatch-owned activity.
-
-### Phase 10 — Multi-city sweeps
-
-**Deliverables**
-
-- Select multiple districts and coordinate Lifestream travel with aetheryte approach/menu/sweep flow.
-- Preflight destinations, show per-district and total progress, summarize skipped/incomplete work.
-- Configurable skip/stop behavior for known blockers; bounded recovery from interrupted travel.
-
-**State flow:** `Preflight → Travel → Confirm arrival → Approach → Open menu → Sweep → Next district`.
-
-**Acceptance**
-
-- Full selected-city sweep completes in-game and reports only verified observations.
-- Combat, logout, territory changes, unavailable travel, provider loss, and cancellation stop safely.
-- No indefinite retries; plugin restart never silently resumes automation.
-
-### Phase 11 — Release hardening
-
-**Deliverables**
-
-- Tests for schedule, filters, bid identity/state, alert deduplication, persistence, and sweep transitions using fake clock/game/provider seams.
-- In-game checklist for supported cities, ward counts, missing-plugin scenarios, and interruption/recovery paths.
+- Tests for schedule, API parsing/filtering, bid identity/state, alert deduplication, persistence, and optional travel boundaries using fake clock/game/provider seams.
+- In-game checklist for API failure/staleness, bid capture, missing-plugin scenarios, and optional travel behavior.
 - Dependency/setup documentation, source attribution, license review, automation disclosure.
 - Redact character Content IDs from logs; verify clean install and release packaging.
 
@@ -306,16 +231,16 @@ Start with the user already at an open ward-selection menu to validate observati
 
 ### Delivery checkpoints
 
-1. **Tracking MVP:** phases 1–4.
-2. **Housing discovery:** phases 5–6.
-3. **Verified contribution sweep:** phases 7–8.
-4. **Automated multi-city sweeps:** phases 9–10.
-5. **Release candidate:** phase 11.
+1. **Housing discovery:** phase 3.
+2. **Bid tracking MVP:** phases 4–5.
+3. **Alerts and optional travel validation:** phases 6–7.
+4. **Release candidate:** phase 8.
 
 ### Licensing and attribution
 
 - HousingLottoTracker is a feature reference, not a code dependency. This project will implement equivalent user-facing bid-tracking behavior independently unless reuse permission and a suitable license are verified.
-- PaissaHouse is MIT-licensed per its repository; prefer runtime integration rather than bundling its code. Preserve required attribution/license notices if any source is later reused.
+- PaissaHouse is an optional reference only; PlotWatch does not depend on it or automate contribution sweeps.
+- PaissaWah is AGPLv3-licensed; use as a feature reference only unless AGPL obligations are intentionally accepted.
 - Attribute PaissaDB as the source of crowdsourced listing data and link users to its site/API documentation.
 
 ## Build
@@ -328,4 +253,4 @@ From `/mnt/d/Coding/C#/PlotWatch`, build with installed Windows .NET SDK:
 "/mnt/c/Program Files/dotnet/dotnet.exe" build PlotWatch/PlotWatch.csproj -c Release
 ```
 
-The initial scaffold registers `/plotwatch` and `/pw`; product features described above are pending implementation.
+The initial scaffold registers `/plotwatch` and `/pw`; Phases 3–8 remain pending implementation.
