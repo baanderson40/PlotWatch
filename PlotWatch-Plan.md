@@ -4,7 +4,7 @@ Dalamud plugin for FFXIV housing lottery tracking, available-plot discovery, ale
 
 Commands: `/plotwatch` and `/pw`.
 
-> **Status:** Phase 1 shell implemented and Release build verified. In-game UI/lifecycle validation remains pending. Lottery tracking, PaissaDB access, alerts, integrations, and sweeps are not implemented yet.
+> **Status:** Phases 1–2 implemented; Release build and offline tests pass. Phase 2 still needs in-game dashboard validation. Bid tracking, PaissaDB access, alerts, integrations, and sweeps are not implemented yet.
 
 ## Product specification
 
@@ -137,6 +137,8 @@ Controls and safeguards:
 - Dalamud validation notices are resolved through real UI callbacks and manifest metadata, not dummy handlers.
 
 ### Phase 2 — Lottery clock and dashboard
+
+**Status:** Implemented; Release build and schedule tests pass. In-game dashboard/timezone validation remains pending.
 
 **Deliverables**
 

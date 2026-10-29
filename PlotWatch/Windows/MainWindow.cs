@@ -5,6 +5,7 @@ using Dalamud.Interface.Utility;
 using Dalamud.Interface.Windowing;
 using PlotWatch.Data;
 using PlotWatch.Diagnostics;
+using PlotWatch.Lottery;
 
 namespace PlotWatch.Windows;
 
@@ -16,6 +17,8 @@ public sealed class MainWindow : Window
     private readonly ConfigurationResetConfirmation resetConfirmation;
     private readonly Action openDebugWindow;
     private PlotWatchTab? requestedTab;
+    private LotteryScheduleSnapshot? lotterySnapshot;
+    private bool showScheduleDetails;
 
     public MainWindow(
         Configuration configuration,
@@ -23,7 +26,7 @@ public sealed class MainWindow : Window
         Action saveConfiguration,
         ConfigurationResetConfirmation resetConfirmation,
         Action openDebugWindow)
-        : base("PlotWatch", ImGuiWindowFlags.NoCollapse)
+        : base("PlotWatch")
     {
         this.configuration = configuration;
         this.diagnostics = diagnostics;
@@ -90,16 +93,82 @@ public sealed class MainWindow : Window
         ImGui.EndTabItem();
     }
 
-    private static void DrawDashboard()
+    public void SetLotterySnapshot(LotteryScheduleSnapshot snapshot) => lotterySnapshot = snapshot;
+
+    private void DrawDashboard()
     {
-        ImGui.TextUnformatted("PlotWatch housing and lottery tracker");
+        if (lotterySnapshot is not { } snapshot)
+        {
+            ImGui.TextDisabled("Waiting for lottery schedule snapshot...");
+            return;
+        }
+
+        var phaseName = snapshot.CurrentPhase == LotteryPhase.Application ? "Application Period" : "Results Period";
+        var activePeriod = snapshot.CurrentPhase == LotteryPhase.Application ? snapshot.Application : snapshot.Results;
+        var nextPeriod = snapshot.CurrentPhase == LotteryPhase.Application ? snapshot.Results : snapshot.Application;
+
+        ImGui.TextUnformatted("Housing Lottery");
+        ImGui.SameLine();
+        var detailsLabel = showScheduleDetails ? "Details ▾" : "Details ▸";
+        if (ImGui.SmallButton(detailsLabel))
+            showScheduleDetails = !showScheduleDetails;
+
         ImGui.Separator();
-        ImGui.TextWrapped("Foundation phase: the UI shell is ready. Lottery dates, bid tracking, PaissaDB listings, alerts, and sweep automation are planned for later phases.");
+        ImGui.TextUnformatted(phaseName);
+        ImGui.SameLine();
+        ImGui.TextUnformatted($"Ends in {LotterySchedule.FormatRemaining(snapshot.Remaining)}");
+        ImGui.TextWrapped($"{GetActivePeriodSummary(snapshot.CurrentPhase)} until {FormatOverviewTime(activePeriod.EndsAtUtc)}");
+        ImGui.TextWrapped($"Next: {GetPeriodLabel(nextPeriod.Phase)} · {FormatOverviewTime(nextPeriod.StartsAtUtc)}");
+
+        if (!showScheduleDetails)
+            return;
+
         ImGui.Spacing();
-        ImGui.BulletText("Available houses and watchlists are not implemented yet.");
-        ImGui.BulletText("No bids are being captured or stored yet.");
-        ImGui.BulletText("No travel, navigation, or sweep automation is active.");
+        ImGui.Separator();
+        DrawPeriodDetails(snapshot.Application);
+        ImGui.Spacing();
+        DrawPeriodDetails(snapshot.Results);
+        ImGui.Spacing();
+        ImGui.TextWrapped("Schedule uses a fixed 9-day cycle: 5 application days followed by 4 results days. Individual bid deadlines may differ.");
+        ImGui.TextDisabled("Source: Xenoveritas FFXIV Event/Maintenance Timers");
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Open source"))
+            Dalamud.Utility.Util.OpenLink("https://xenoveritas.org/static/ffxiv/timer.html");
     }
+
+    private void DrawPeriodDetails(LotteryPeriodOccurrence period)
+    {
+        ImGui.TextUnformatted(GetPeriodLabel(period.Phase));
+        ImGui.SameLine();
+        ImGui.TextDisabled(period.IsActive ? "ACTIVE" : "UPCOMING");
+        ImGui.TextWrapped(period.Phase == LotteryPhase.Application
+            ? LotterySchedule.ApplicationExplanation
+            : LotterySchedule.ResultsExplanation);
+        ImGui.TextWrapped($"Starts at: {FormatScheduleTime(period.StartsAtUtc)}");
+        ImGui.TextWrapped($"Ends at: {FormatScheduleTime(period.EndsAtUtc)}");
+        ImGui.TextWrapped($"Next at: {FormatScheduleTime(period.NextAtUtc)}");
+    }
+
+    private string FormatScheduleTime(DateTimeOffset utc)
+        => LotterySchedule.FormatTimestamp(utc, configuration.DisplayLotteryTimesInUtc, TimeZoneInfo.Local);
+
+    private string FormatOverviewTime(DateTimeOffset utc)
+    {
+        var displayTime = configuration.DisplayLotteryTimesInUtc
+            ? utc.ToUniversalTime()
+            : TimeZoneInfo.ConvertTime(utc, TimeZoneInfo.Local);
+        return displayTime.ToString(configuration.DisplayLotteryTimesInUtc
+            ? "ddd, MMM d · h:mm tt 'UTC'"
+            : "ddd, MMM d · h:mm tt");
+    }
+
+    private static string GetPeriodLabel(LotteryPhase phase)
+        => phase == LotteryPhase.Application ? "Applications" : "Results";
+
+    private static string GetActivePeriodSummary(LotteryPhase phase)
+        => phase == LotteryPhase.Application
+            ? "Entries can be placed"
+            : "Winning bids can be accepted";
 
     private static void DrawPlaceholder()
     {
@@ -158,6 +227,13 @@ public sealed class MainWindow : Window
         if (ImGui.Checkbox("Enable notification sound (off by default)", ref sound))
         {
             configuration.SoundNotificationsEnabled = sound;
+            saveConfiguration();
+        }
+
+        var displayUtc = configuration.DisplayLotteryTimesInUtc;
+        if (ImGui.Checkbox("Display lottery schedule in UTC", ref displayUtc))
+        {
+            configuration.DisplayLotteryTimesInUtc = displayUtc;
             saveConfiguration();
         }
 

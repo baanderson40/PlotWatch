@@ -7,6 +7,7 @@ using System.Reflection;
 using PlotWatch.Commands;
 using PlotWatch.Data;
 using PlotWatch.Diagnostics;
+using PlotWatch.Lottery;
 using PlotWatch.Windows;
 
 namespace PlotWatch;
@@ -38,6 +39,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly OwnedCommandRegistration aliasCommandRegistration;
     private readonly Queue<DiagnosticAction> diagnosticQueue = new();
     private bool configurationSaveBlocked;
+    private long nextLotteryRefreshTick;
 
     public string Name => "PlotWatch";
 
@@ -59,6 +61,7 @@ public sealed class Plugin : IDalamudPlugin
         debugWindow = new DebugWindow(configuration, diagnostics, QueueDiagnostic);
         windowSystem.AddWindow(mainWindow);
         windowSystem.AddWindow(debugWindow);
+        UpdateLotterySnapshot();
         diagnostics.MainWindowStatus = "Registered";
         diagnostics.DebugWindowStatus = "Registered";
 
@@ -202,6 +205,8 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnFrameworkUpdate(IFramework framework)
     {
+        UpdateLotterySnapshot();
+
         if (diagnosticQueue.Count == 0)
         {
             diagnostics.IsRequestPending = false;
@@ -221,6 +226,7 @@ public sealed class Plugin : IDalamudPlugin
             DiagnosticAction.InspectConfiguration => "Configuration inspection",
             DiagnosticAction.InspectCommandsAndUi => "Commands and UI check",
             DiagnosticAction.InspectDependencies => "Dependency check",
+            DiagnosticAction.InspectLotteryClock => "Lottery clock inspection",
             DiagnosticAction.ClearHistory => "Clear displayed history",
             _ => "Unknown diagnostic action",
         };
@@ -239,6 +245,7 @@ public sealed class Plugin : IDalamudPlugin
                     InspectConfiguration();
                     InspectCommandsAndUi();
                     succeeded = InspectDependencies();
+                    InspectLotteryClock();
                     break;
                 case DiagnosticAction.InspectConfiguration:
                     InspectConfiguration();
@@ -248,6 +255,9 @@ public sealed class Plugin : IDalamudPlugin
                     break;
                 case DiagnosticAction.InspectDependencies:
                     succeeded = InspectDependencies();
+                    break;
+                case DiagnosticAction.InspectLotteryClock:
+                    InspectLotteryClock();
                     break;
                 case DiagnosticAction.ClearHistory:
                     RecordDiagnostic(DiagnosticSeverity.Debug, "Displayed diagnostic history cleared.");
@@ -276,7 +286,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private void InspectConfiguration()
     {
-        var summary = $"Schema {configuration.Version}/{Configuration.CurrentVersion}; state: {diagnostics.ConfigurationStatus}; default tab: {(PlotWatchTab)configuration.DefaultTab}; text scale: {configuration.TextScalePercent:F0}%; notifications chat={configuration.ChatNotificationsEnabled}, toast={configuration.ToastNotificationsEnabled}, sound={configuration.SoundNotificationsEnabled}.";
+        var summary = $"Schema {configuration.Version}/{Configuration.CurrentVersion}; state: {diagnostics.ConfigurationStatus}; default tab: {(PlotWatchTab)configuration.DefaultTab}; text scale: {configuration.TextScalePercent:F0}%; schedule display: {(configuration.DisplayLotteryTimesInUtc ? "UTC" : "local")}; notifications chat={configuration.ChatNotificationsEnabled}, toast={configuration.ToastNotificationsEnabled}, sound={configuration.SoundNotificationsEnabled}.";
         RecordDiagnostic(DiagnosticSeverity.Debug, summary);
     }
 
@@ -298,6 +308,25 @@ public sealed class Plugin : IDalamudPlugin
         RecordDiagnostic(DiagnosticSeverity.Debug,
             $"Dependencies: PaissaHouse={diagnostics.PaissaHouseStatus}; Lifestream={diagnostics.LifestreamStatus}; navigation={diagnostics.NavigationStatus}. Detection means installed/loaded metadata only; compatibility is unvalidated.");
         return true;
+    }
+
+    private void InspectLotteryClock()
+    {
+        var snapshot = LotterySchedule.GetSnapshot(DateTimeOffset.UtcNow);
+        var displayZone = LotterySchedule.GetDisplayZoneLabel(configuration.DisplayLotteryTimesInUtc, TimeZoneInfo.Local, snapshot.NowUtc);
+        var summary = $"Now UTC={snapshot.NowUtc:O}; cycle={snapshot.CycleId}; phase={snapshot.CurrentPhase}; phase ends UTC={snapshot.CurrentPhaseEndsAtUtc:O}; remaining={LotterySchedule.FormatRemaining(snapshot.Remaining)}; application UTC={snapshot.Application.StartsAtUtc:O}–{snapshot.Application.EndsAtUtc:O} (next {snapshot.Application.NextAtUtc:O}); results UTC={snapshot.Results.StartsAtUtc:O}–{snapshot.Results.EndsAtUtc:O} (next {snapshot.Results.NextAtUtc:O}); display={displayZone}; anchor UTC={LotterySchedule.ApplicationAnchorUtc:O}.";
+        diagnostics.SetLotteryClockStatus(summary);
+        RecordDiagnostic(DiagnosticSeverity.Debug, summary);
+    }
+
+    private void UpdateLotterySnapshot()
+    {
+        var tickCount = Environment.TickCount64;
+        if (tickCount < nextLotteryRefreshTick)
+            return;
+
+        mainWindow.SetLotterySnapshot(LotterySchedule.GetSnapshot(DateTimeOffset.UtcNow));
+        nextLotteryRefreshTick = tickCount + 1_000;
     }
 
     private void RecordDiagnostic(DiagnosticSeverity severity, string message)

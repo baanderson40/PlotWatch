@@ -16,6 +16,7 @@ public sealed class DebugWindow : Window
         (DiagnosticSection.Configuration, "Configuration", "Read-only inspection of current settings and persistence state."),
         (DiagnosticSection.CommandsAndUi, "Commands & UI", "Command ownership, callback registration, and window lifecycle."),
         (DiagnosticSection.Dependencies, "Dependencies", "Installed/loaded metadata for optional companion plugins."),
+        (DiagnosticSection.LotteryClock, "Lottery Clock", "Calculated 9-day housing-lottery schedule and timezone display."),
         (DiagnosticSection.LogsAndErrors, "Logs & Errors", "Recent diagnostic results retained for this session."),
     ];
 
@@ -102,6 +103,9 @@ public sealed class DebugWindow : Window
             case DiagnosticSection.Dependencies:
                 DrawDependencies();
                 break;
+            case DiagnosticSection.LotteryClock:
+                DrawLotteryClock();
+                break;
             case DiagnosticSection.LogsAndErrors:
                 DrawHistory();
                 break;
@@ -161,6 +165,15 @@ public sealed class DebugWindow : Window
         ImGui.Separator();
         if (DrawActionButton("Check dependencies"))
             enqueueAction(DiagnosticAction.InspectDependencies);
+    }
+
+    private void DrawLotteryClock()
+    {
+        ImGui.TextWrapped(diagnostics.LotteryClockStatus);
+        ImGui.TextWrapped("Schedule calculations use the local system clock converted to UTC. The check is read-only and does not inspect bids or game state.");
+        ImGui.Separator();
+        if (DrawActionButton("Inspect lottery clock"))
+            enqueueAction(DiagnosticAction.InspectLotteryClock);
     }
 
     private void DrawHistory()

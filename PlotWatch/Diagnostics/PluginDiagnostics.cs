@@ -13,6 +13,7 @@ public enum DiagnosticAction
     InspectConfiguration,
     InspectCommandsAndUi,
     InspectDependencies,
+    InspectLotteryClock,
     ClearHistory,
 }
 
@@ -22,6 +23,7 @@ public enum DiagnosticSection
     Configuration,
     CommandsAndUi,
     Dependencies,
+    LotteryClock,
     LogsAndErrors,
 }
 
@@ -60,6 +62,7 @@ public sealed class PluginDiagnostics
     public string PaissaHouseStatus { get; private set; } = "Unknown";
     public string LifestreamStatus { get; private set; } = "Unknown";
     public string NavigationStatus { get; private set; } = "Unknown";
+    public string LotteryClockStatus { get; private set; } = "Not inspected";
     public string MainCommandStatus { get; set; } = "Not registered";
     public string AliasCommandStatus { get; set; } = "Not registered";
     public string DrawCallbackStatus { get; set; } = "Not registered";
@@ -87,6 +90,8 @@ public sealed class PluginDiagnostics
     public void SetConfigurationStatus(string value) => ConfigurationStatus = value;
 
     public void SetLastError(string value) => LastError = value;
+
+    public void SetLotteryClockStatus(string value) => LotteryClockStatus = value;
 
     public void SetDependencies(string paissaHouse, string lifestream, string navigation)
     {

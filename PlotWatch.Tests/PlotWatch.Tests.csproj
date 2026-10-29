@@ -12,6 +12,7 @@
         <Compile Include="..\PlotWatch\Data\Configuration.cs" Link="Production\Configuration.cs" />
         <Compile Include="..\PlotWatch\Data\ConfigurationResetConfirmation.cs" Link="Production\ConfigurationResetConfirmation.cs" />
         <Compile Include="..\PlotWatch\Diagnostics\PluginDiagnostics.cs" Link="Production\PluginDiagnostics.cs" />
+        <Compile Include="..\PlotWatch\Lottery\LotterySchedule.cs" Link="Production\LotterySchedule.cs" />
         <Compile Include="..\PlotWatch\Windows\PlotWatchTab.cs" Link="Production\PlotWatchTab.cs" />
     </ItemGroup>
 </Project>

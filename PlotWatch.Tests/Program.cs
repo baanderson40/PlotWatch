@@ -2,12 +2,14 @@ using PlotWatch.Data;
 using PlotWatch.Diagnostics;
 using PlotWatch.Commands;
 using PlotWatch.Windows;
+using PlotWatch.Lottery;
 
 var tests = new (string Name, Action Test)[]
 {
     ("configuration defaults are safe", ConfigurationDefaults),
     ("configuration normalization migrates and clamps values", ConfigurationNormalization),
     ("configuration normalization repairs invalid tab", InvalidDefaultTab),
+    ("configuration migration preserves settings and defaults to local time", TimeDisplayMigration),
     ("reset restores configuration defaults", ResetConfiguration),
     ("reset cancellation does not invoke destructive action", ResetCancellation),
     ("reset confirmation applies and saves defaults", ResetConfirmation),
@@ -19,6 +21,13 @@ var tests = new (string Name, Action Test)[]
     ("diagnostic history is bounded and keeps newest entries", DiagnosticHistoryBound),
     ("clearing history removes retained entries", ClearDiagnosticHistory),
     ("per-action results retain findings independently", DiagnosticRunsRetainFindings),
+    ("lottery schedule classifies exact phase boundaries", LotteryBoundaries),
+    ("lottery schedule handles pre-anchor dates", LotteryBeforeAnchor),
+    ("lottery period cards select active and next occurrences", LotteryPeriodOccurrences),
+    ("known October and November schedule dates match anchor", KnownLotteryDates),
+    ("Central local display applies daylight-saving transition", CentralDaylightSaving),
+    ("local timezone label refreshes its numeric offset", LocalZoneLabel),
+    ("lottery countdown formats and recalculates after clock changes", LotteryCountdown),
 };
 
 var failures = 0;
@@ -73,6 +82,24 @@ static void InvalidDefaultTab()
     var config = new Configuration { DefaultTab = 999 };
     config.Normalize();
     Equal((int)PlotWatchTab.Dashboard, config.DefaultTab);
+}
+
+static void TimeDisplayMigration()
+{
+    var config = new Configuration
+    {
+        Version = 2,
+        TextScalePercent = 116f,
+        DisplayLotteryTimesInUtc = false,
+        ChatNotificationsEnabled = false,
+    };
+
+    config.Normalize();
+
+    Equal(Configuration.CurrentVersion, config.Version);
+    Equal(116f, config.TextScalePercent);
+    Equal(false, config.DisplayLotteryTimesInUtc);
+    Equal(false, config.ChatNotificationsEnabled);
 }
 
 static void ResetConfiguration()
@@ -256,6 +283,90 @@ static void DiagnosticRunsRetainFindings()
     Equal("schema valid", diagnostics.Runs[0].Findings[0].Message);
     Equal("save blocked", diagnostics.Runs[0].Findings[1].Message);
     Equal("Lifestream detected", diagnostics.Runs[1].Findings.Single().Message);
+}
+
+static void LotteryBoundaries()
+{
+    var anchor = LotterySchedule.ApplicationAnchorUtc;
+    Equal(LotteryPhase.Application, LotterySchedule.GetSnapshot(anchor).CurrentPhase);
+    Equal(LotteryPhase.Application, LotterySchedule.GetSnapshot(anchor + LotterySchedule.ApplicationLength - TimeSpan.FromTicks(1)).CurrentPhase);
+    Equal(LotteryPhase.Results, LotterySchedule.GetSnapshot(anchor + LotterySchedule.ApplicationLength).CurrentPhase);
+    Equal(LotteryPhase.Results, LotterySchedule.GetSnapshot(anchor + LotterySchedule.CycleLength - TimeSpan.FromTicks(1)).CurrentPhase);
+    Equal(LotteryPhase.Application, LotterySchedule.GetSnapshot(anchor + LotterySchedule.CycleLength).CurrentPhase);
+    Equal(1L, LotterySchedule.GetSnapshot(anchor + LotterySchedule.CycleLength).CycleId);
+}
+
+static void LotteryBeforeAnchor()
+{
+    var snapshot = LotterySchedule.GetSnapshot(LotterySchedule.ApplicationAnchorUtc - TimeSpan.FromDays(1));
+    Equal(-1L, snapshot.CycleId);
+    Equal(LotteryPhase.Results, snapshot.CurrentPhase);
+    Equal(LotterySchedule.ApplicationAnchorUtc, snapshot.Application.StartsAtUtc);
+    Equal(LotterySchedule.ApplicationAnchorUtc - TimeSpan.FromDays(4), snapshot.Results.StartsAtUtc);
+}
+
+static void LotteryPeriodOccurrences()
+{
+    var snapshot = LotterySchedule.GetSnapshot(new DateTimeOffset(2026, 10, 29, 15, 0, 0, TimeSpan.Zero));
+    Equal(LotteryPhase.Results, snapshot.CurrentPhase);
+    Equal(true, snapshot.Results.IsActive);
+    Equal(false, snapshot.Application.IsActive);
+    Equal(new DateTimeOffset(2026, 10, 28, 15, 0, 0, TimeSpan.Zero), snapshot.Results.StartsAtUtc);
+    Equal(new DateTimeOffset(2026, 11, 1, 15, 0, 0, TimeSpan.Zero), snapshot.Results.EndsAtUtc);
+    Equal(new DateTimeOffset(2026, 11, 6, 15, 0, 0, TimeSpan.Zero), snapshot.Results.NextAtUtc);
+    Equal(new DateTimeOffset(2026, 11, 1, 15, 0, 0, TimeSpan.Zero), snapshot.Application.StartsAtUtc);
+    Equal(new DateTimeOffset(2026, 11, 6, 15, 0, 0, TimeSpan.Zero), snapshot.Application.EndsAtUtc);
+    Equal(new DateTimeOffset(2026, 11, 10, 15, 0, 0, TimeSpan.Zero), snapshot.Application.NextAtUtc);
+}
+
+static void KnownLotteryDates()
+{
+    var results = LotterySchedule.GetSnapshot(new DateTimeOffset(2026, 10, 28, 15, 0, 0, TimeSpan.Zero));
+    Equal(LotteryPhase.Results, results.CurrentPhase);
+    Equal(new DateTimeOffset(2026, 10, 28, 15, 0, 0, TimeSpan.Zero), results.Results.StartsAtUtc);
+    Equal(new DateTimeOffset(2026, 11, 1, 15, 0, 0, TimeSpan.Zero), results.Results.EndsAtUtc);
+    Equal(new DateTimeOffset(2026, 11, 6, 15, 0, 0, TimeSpan.Zero), results.Results.NextAtUtc);
+
+    var application = LotterySchedule.GetSnapshot(new DateTimeOffset(2026, 11, 1, 15, 0, 0, TimeSpan.Zero));
+    Equal(LotteryPhase.Application, application.CurrentPhase);
+    Equal(new DateTimeOffset(2026, 11, 1, 15, 0, 0, TimeSpan.Zero), application.Application.StartsAtUtc);
+    Equal(new DateTimeOffset(2026, 11, 6, 15, 0, 0, TimeSpan.Zero), application.Application.EndsAtUtc);
+    Equal(new DateTimeOffset(2026, 11, 10, 15, 0, 0, TimeSpan.Zero), application.Application.NextAtUtc);
+}
+
+static void CentralDaylightSaving()
+{
+    var central = TimeZoneInfo.FindSystemTimeZoneById("Central Standard Time");
+    var before = LotterySchedule.FormatTimestamp(
+        new DateTimeOffset(2026, 10, 28, 15, 0, 0, TimeSpan.Zero), false, central);
+    var after = LotterySchedule.FormatTimestamp(
+        new DateTimeOffset(2026, 11, 1, 15, 0, 0, TimeSpan.Zero), false, central);
+
+    Equal(true, before.Contains("10:00:00 AM UTC-05:00", StringComparison.Ordinal));
+    Equal(true, after.Contains("9:00:00 AM UTC-06:00", StringComparison.Ordinal));
+}
+
+static void LocalZoneLabel()
+{
+    var central = TimeZoneInfo.FindSystemTimeZoneById("Central Standard Time");
+    Equal("Local time (UTC−05:00)", LotterySchedule.GetDisplayZoneLabel(
+        false, central, new DateTimeOffset(2026, 10, 28, 15, 0, 0, TimeSpan.Zero)));
+    Equal("Local time (UTC−06:00)", LotterySchedule.GetDisplayZoneLabel(
+        false, central, new DateTimeOffset(2026, 11, 1, 15, 0, 0, TimeSpan.Zero)));
+}
+
+static void LotteryCountdown()
+{
+    Equal("00:00:01", LotterySchedule.FormatRemaining(TimeSpan.FromTicks(1)));
+    Equal("05:04:03", LotterySchedule.FormatRemaining(TimeSpan.FromHours(5).Add(TimeSpan.FromMinutes(4)).Add(TimeSpan.FromSeconds(3))));
+    Equal("2d 03:04:05", LotterySchedule.FormatRemaining(TimeSpan.FromDays(2).Add(TimeSpan.FromHours(3)).Add(TimeSpan.FromMinutes(4)).Add(TimeSpan.FromSeconds(5))));
+    Equal("00:00:00", LotterySchedule.FormatRemaining(TimeSpan.FromSeconds(-1)));
+
+    var first = LotterySchedule.GetSnapshot(new DateTimeOffset(2026, 11, 1, 14, 59, 59, TimeSpan.Zero));
+    var jumped = LotterySchedule.GetSnapshot(new DateTimeOffset(2026, 11, 1, 15, 0, 0, TimeSpan.Zero));
+    Equal(TimeSpan.FromSeconds(1), first.Remaining);
+    Equal(LotteryPhase.Application, jumped.CurrentPhase);
+    Equal(LotterySchedule.ApplicationLength, jumped.Remaining);
 }
 
 static PluginDiagnostics NewDiagnostics() => new("Loaded", () => true, "test-version", "test-build");

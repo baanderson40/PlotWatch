@@ -6,13 +6,15 @@ namespace PlotWatch.Data;
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public const int CurrentVersion = 2;
+    public const int CurrentVersion = 3;
 
     public int Version { get; set; } = CurrentVersion;
 
     public int DefaultTab { get; set; } = (int)PlotWatchTab.Dashboard;
 
     public float TextScalePercent { get; set; } = 100f;
+
+    public bool DisplayLotteryTimesInUtc { get; set; }
 
     public bool ChatNotificationsEnabled { get; set; } = true;
 
@@ -34,6 +36,7 @@ public sealed class Configuration : IPluginConfiguration
     {
         DefaultTab = (int)PlotWatchTab.Dashboard;
         TextScalePercent = 100f;
+        DisplayLotteryTimesInUtc = false;
         ChatNotificationsEnabled = true;
         ToastNotificationsEnabled = true;
         SoundNotificationsEnabled = false;
