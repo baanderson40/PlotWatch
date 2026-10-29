@@ -1,0 +1,19 @@
+<Project Sdk="Dalamud.NET.Sdk/15.0.0">
+    <PropertyGroup>
+        <Version>0.1.0.0</Version>
+        <Name>PlotWatch</Name>
+        <Author>PlotWatch contributors</Author>
+        <Punchline>Track housing lotteries and discover available plots.</Punchline>
+        <Description>Tracks housing lottery bids and helps contribute housing availability data.</Description>
+        <TargetFramework>net10.0-windows</TargetFramework>
+        <Platforms>x64</Platforms>
+        <LangVersion>latest</LangVersion>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+        <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+        <IsPackable>false</IsPackable>
+        <Product>PlotWatch</Product>
+        <PackageId>PlotWatch</PackageId>
+    </PropertyGroup>
+</Project>
