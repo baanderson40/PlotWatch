@@ -5,6 +5,7 @@
         <Author>PlotWatch contributors</Author>
         <Punchline>Track housing lotteries and discover available plots.</Punchline>
         <Description>Tracks housing lottery bids and helps contribute housing availability data.</Description>
+        <Tags>housing;lottery;tracking</Tags>
         <TargetFramework>net10.0-windows</TargetFramework>
         <Platforms>x64</Platforms>
         <LangVersion>latest</LangVersion>
@@ -15,5 +16,18 @@
         <IsPackable>false</IsPackable>
         <Product>PlotWatch</Product>
         <PackageId>PlotWatch</PackageId>
+        <PlotWatchBuildId>$([System.DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'))</PlotWatchBuildId>
     </PropertyGroup>
+
+    <ItemGroup>
+        <AssemblyMetadata Include="PlotWatchBuildId" Value="$(PlotWatchBuildId)" />
+    </ItemGroup>
+
+    <Target Name="PlotWatchCompileStarting" BeforeTargets="CoreCompile" Condition="'$(DesignTimeBuild)' != 'true'">
+        <Message Importance="high" Text="PlotWatch: compiling build $(PlotWatchBuildId) ($(Configuration)|$(Platform))..." />
+    </Target>
+
+    <Target Name="PlotWatchCompileSucceeded" AfterTargets="CoreCompile" Condition="'$(DesignTimeBuild)' != 'true'">
+        <Message Importance="high" Text="PlotWatch: build $(PlotWatchBuildId) compiled successfully. Output: $(TargetPath)" />
+    </Target>
 </Project>

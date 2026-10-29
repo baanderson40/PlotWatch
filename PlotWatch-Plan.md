@@ -4,7 +4,7 @@ Dalamud plugin for FFXIV housing lottery tracking, available-plot discovery, ale
 
 Commands: `/plotwatch` and `/pw`.
 
-> This repository currently contains the initial plugin scaffold and product specification. Housing UI, tracking, API access, integrations, and sweeps are not implemented yet.
+> **Status:** Phase 1 shell implemented and Release build verified. In-game UI/lifecycle validation remains pending. Lottery tracking, PaissaDB access, alerts, integrations, and sweeps are not implemented yet.
 
 ## Product specification
 
@@ -112,19 +112,27 @@ Controls and safeguards:
 
 ### Phase 1 — Foundation and working UI
 
+**Status:** Implemented; Release build passes. In-game acceptance checks remain pending.
+
 **Deliverables**
 
 - Main window with Dashboard, Houses, Bids, Alerts, Sweeps, and Settings tabs.
+- Bug-icon title-bar button opens a separate diagnostics window with left navigation and right action/results panel.
+- Diagnostics actions are explicit, queued, read-only checks; results appear in the window and `IPluginLog.Debug` output. Warnings/errors use corresponding log levels.
+- Debug sections cover overview, configuration, commands/UI lifecycle, dependency metadata, and bounded session history.
 - `/plotwatch` and `/pw` both open the main window. Register `/pw` only if available; remove it only if PlotWatch registered it.
+- Settings includes an **Open diagnostics** action; the debug window starts closed and opens from either that action or the bug icon.
 - Register `UiBuilder.OpenMainUi` and `UiBuilder.OpenConfigUi`; unsubscribe callbacks during disposal.
 - Add manifest tags for housing, lottery, and tracking.
 - Versioned configuration/persistence boundaries, diagnostics, and integration-readiness display.
+- Persisted text-size slider from 75% to 150% (default 100%).
 - Add appropriate `.gitignore`; preserve dependency lockfiles.
 
 **Acceptance checks**
 
 - Windows .NET Release build succeeds.
 - Main/config buttons open the real UI.
+- Bug icon and Settings action open/focus diagnostics; diagnostics actions log findings without running automation or mutating configuration.
 - Reloading plugin leaves no orphaned callbacks or command registrations.
 - Dalamud validation notices are resolved through real UI callbacks and manifest metadata, not dummy handlers.
 
