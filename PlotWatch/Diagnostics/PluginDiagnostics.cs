@@ -19,6 +19,9 @@ public enum DiagnosticAction
     InspectPaissaSchema,
     CancelPaissaRequest,
     ClearHistory,
+    InspectHousingTemplates,
+    StopHousingProbe,
+    ClearHousingProbe,
 }
 
 public enum DiagnosticSection
@@ -30,6 +33,7 @@ public enum DiagnosticSection
     LotteryClock,
     PaissaApi,
     LogsAndErrors,
+    HousingCapture,
 }
 
 public sealed record DiagnosticEntry(DateTime TimestampLocal, DiagnosticSeverity Severity, string Message);

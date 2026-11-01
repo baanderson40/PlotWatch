@@ -4,10 +4,8 @@ namespace PlotWatch.Paissa;
 
 public enum PaissaPhaseFilter
 {
-    Any,
-    Available,
+    Entry,
     Results,
-    Unavailable,
     Unknown,
 }
 
@@ -41,30 +39,28 @@ public sealed record PaissaHousingWorldData(
 public static class PaissaHousingPolicy
 {
     public static string GetPhaseLabel(PaissaPlotListing plot, DateTimeOffset asOfUtc)
-        => GetPhaseFilter(plot, asOfUtc) switch
+        => GetPhaseLabel(plot.PurchaseSystem, asOfUtc);
+
+    public static string GetPhaseLabel(int? purchaseSystem, DateTimeOffset asOfUtc)
+        => GetPhaseFilter(purchaseSystem, asOfUtc) switch
         {
-            PaissaPhaseFilter.Available => "Entry",
+            PaissaPhaseFilter.Entry => "Entry",
             PaissaPhaseFilter.Results => "Results",
-            PaissaPhaseFilter.Unavailable => "Unavailable",
-            _ => "Unknown",
+            _ => purchaseSystem is >= 0 and <= 7 ? "Not applicable" : "Unknown",
         };
 
     public static PaissaPhaseFilter GetPhaseFilter(PaissaPlotListing plot, DateTimeOffset asOfUtc)
-    {
-        var deadline = PaissaApiParser.UnixSecondsToUtc(plot.LottoPhaseUntil);
-        if (plot.LottoPhase == 1)
-        {
-            if (deadline is not { } entryDeadline || entryDeadline > asOfUtc)
-                return PaissaPhaseFilter.Available;
+        => GetPhaseFilter(plot.PurchaseSystem, asOfUtc);
 
-            return IsEntryInferredAsResults(plot, asOfUtc) ? PaissaPhaseFilter.Results : PaissaPhaseFilter.Unknown;
-        }
-        if (plot.LottoPhase == 2)
-            return PaissaPhaseFilter.Results;
-        if (plot.LottoPhase == 3)
-            return PaissaPhaseFilter.Unavailable;
-        return PaissaPhaseFilter.Unknown;
+    public static PaissaPhaseFilter GetPhaseFilter(int? purchaseSystem, DateTimeOffset asOfUtc)
+    {
+        if (!IsLottery(purchaseSystem)) return PaissaPhaseFilter.Unknown;
+        return LotterySchedule.GetSnapshot(asOfUtc).CurrentPhase == LotteryPhase.Application
+            ? PaissaPhaseFilter.Entry : PaissaPhaseFilter.Results;
     }
+
+    private static bool IsLottery(int? purchaseSystem)
+        => purchaseSystem is >= 0 and <= 7 && (purchaseSystem.Value & 1) != 0;
 
     public static PaissaSourceFreshness GetSourceFreshness(PaissaPlotListing plot, DateTimeOffset asOfUtc)
     {
@@ -83,17 +79,17 @@ public static class PaissaHousingPolicy
 
     public static string GetPhaseExplanation(PaissaPlotListing plot, DateTimeOffset asOfUtc)
     {
-        if (IsEntryInferredAsResults(plot, asOfUtc))
-            return "PaissaDB reported Entry; its deadline passed during this cycle’s Results period.";
-        return $"PaissaDB reported {PaissaApiParser.DescribeLotteryPhase(plot.LottoPhase)}.";
+        var interpretation = IsLottery(plot.PurchaseSystem)
+            ? $"PW uses the global housing-lottery schedule: {GetPhaseLabel(plot, asOfUtc)}. This does not confirm continued plot vacancy."
+            : "No lottery period assigned: purchase system is non-lottery, missing, or unrecognized.";
+        return $"{interpretation} Raw PaissaDB phase: {PaissaApiParser.DescribeLotteryPhase(plot.LottoPhase)}.";
     }
 
     public static DateTimeOffset? GetDisplayedPhaseDeadline(PaissaPlotListing plot, DateTimeOffset asOfUtc)
-    {
-        if (IsEntryInferredAsResults(plot, asOfUtc))
-            return LotterySchedule.GetSnapshot(asOfUtc).Results.EndsAtUtc;
-        return PaissaApiParser.UnixSecondsToUtc(plot.LottoPhaseUntil);
-    }
+        => GetDisplayedPhaseDeadline(plot.PurchaseSystem, asOfUtc);
+
+    public static DateTimeOffset? GetDisplayedPhaseDeadline(int? purchaseSystem, DateTimeOffset asOfUtc)
+        => IsLottery(purchaseSystem) ? LotterySchedule.GetSnapshot(asOfUtc).CurrentPhaseEndsAtUtc : null;
 
     public static string GetClosureCountdown(PaissaPlotListing plot, DateTimeOffset asOfUtc)
     {
@@ -103,16 +99,6 @@ public static class PaissaHousingPolicy
         return remaining > TimeSpan.Zero
             ? $"Closes in {LotterySchedule.FormatRemaining(remaining)}"
             : "Closure time has passed.";
-    }
-
-    private static bool IsEntryInferredAsResults(PaissaPlotListing plot, DateTimeOffset asOfUtc)
-    {
-        if (plot.LottoPhase != 1 || PaissaApiParser.UnixSecondsToUtc(plot.LottoPhaseUntil) is not { } deadline || deadline > asOfUtc)
-            return false;
-
-        var nowSchedule = LotterySchedule.GetSnapshot(asOfUtc);
-        return nowSchedule.CurrentPhase == LotteryPhase.Results &&
-            nowSchedule.CycleId == LotterySchedule.GetSnapshot(deadline).CycleId;
     }
 
     public static bool Matches(PaissaPlotListing plot, PaissaHousingFilters filters, DateTimeOffset asOfUtc)

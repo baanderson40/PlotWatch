@@ -40,7 +40,7 @@ var tests = new (string Name, Action Test)[]
     ("malformed API payload is reported as parse failure", PaissaMalformedResponse),
     ("PaissaDB parser keeps every plot and normalizes one-based address", PaissaFullListings),
     ("empty world listings are a valid zero-plot response", PaissaEmptyWorld),
-    ("housing phases infer Results only within matching cycle", PaissaPhaseFreshness),
+    ("housing lottery phase follows global schedule despite missing or old API reports", PaissaPhaseFreshness),
     ("housing checkbox filters require a checked category match", PaissaHousingFiltersWork),
     ("housing eligibility display omits lottery entry flags", PaissaEligibilityLabels),
     ("housing freshness follows lottery phase age", PaissaCycleFreshness),
@@ -55,11 +55,14 @@ var tests = new (string Name, Action Test)[]
     ("character selection waits for valid identity and world", HousingCharacterReadiness),
     ("character selection works before directory and across reload", HousingCharacterReload),
     ("housing preferences migrate obsolete bits and reset identity", HousingPreferencesMigration),
+    ("housing global phase applies only to recognized lottery purchase flags", HousingPurchaseSystemPhase),
+    ("housing phase-filter migration preserves selections and runs once", HousingPhaseFilterMigration),
+    ("housing district selections replace defaults on config reload", HousingDistrictReload),
     ("PaissaDB client honors 429 retry-after cooldown", PaissaRetryAfter),
     ("PaissaDB cooldown wait can be cancelled", PaissaCooldownCancellation),
     ("PaissaDB requests use conservative spacing", PaissaRequestSpacing),
     ("PaissaDB cooldown extension delays requests already waiting", PaissaCooldownRace),
-};
+}.Concat(BidTests.Cases).Concat(HousingProbeTests.Cases).ToArray();
 
 var failures = 0;
 foreach (var (name, test) in tests)
@@ -508,10 +511,20 @@ static void PaissaPhaseFreshness()
     Equal(new DateTimeOffset(2026, 11, 10, 15, 0, 0, TimeSpan.Zero),
         PaissaHousingPolicy.GetDisplayedPhaseDeadline(reportedEntry, now));
     Equal("Results", PaissaHousingPolicy.GetPhaseLabel(reportedEntry with { LottoPhase = 2 }, now));
-    Equal("Entry", PaissaHousingPolicy.GetPhaseLabel(reportedEntry with { LottoPhaseUntil = now.AddDays(1).ToUnixTimeSeconds() }, now));
-    Equal("Unknown", PaissaHousingPolicy.GetPhaseLabel(reportedEntry with { LottoPhaseUntil = entryDeadline.AddDays(-9).ToUnixTimeSeconds() }, now));
-    Equal("Unknown", PaissaHousingPolicy.GetPhaseLabel(reportedEntry with { LottoPhase = null }, now));
+    Equal("Results", PaissaHousingPolicy.GetPhaseLabel(reportedEntry with { LottoPhaseUntil = now.AddDays(1).ToUnixTimeSeconds() }, now));
+    Equal("Results", PaissaHousingPolicy.GetPhaseLabel(reportedEntry with { LottoPhaseUntil = entryDeadline.AddDays(-9).ToUnixTimeSeconds() }, now));
+    Equal("Results", PaissaHousingPolicy.GetPhaseLabel(reportedEntry with { LottoPhase = null }, now));
     Equal(PaissaPhaseFilter.Results, PaissaHousingPolicy.GetPhaseFilter(reportedEntry, now));
+    // Midgardsormr / Mist W5 P11: sweep reports a lottery vacancy, but lottery fields are null.
+    var wardFivePlotEleven = reportedEntry with
+    {
+        WorldId = 65, WardNumber = 5, PlotNumber = 11, PurchaseSystem = 3,
+        LottoPhase = null, LottoPhaseUntil = null, LottoEntries = null,
+    };
+    var entryNow = LotterySchedule.ApplicationAnchorUtc.AddHours(3);
+    Equal("Entry", PaissaHousingPolicy.GetPhaseLabel(wardFivePlotEleven, entryNow));
+    Equal<DateTimeOffset?>(LotterySchedule.ApplicationAnchorUtc.AddDays(5), PaissaHousingPolicy.GetDisplayedPhaseDeadline(wardFivePlotEleven, entryNow));
+    Equal<long?>(null, wardFivePlotEleven.LottoEntries);
 }
 
 static void PaissaHousingFiltersWork()
@@ -522,7 +535,7 @@ static void PaissaHousingFiltersWork()
     var all = new PaissaHousingFilters(
         new HashSet<int?> { 339 }, new HashSet<int?> { 0, 1, 2, null },
         Enum.GetValues<PaissaEligibilityFilter>().ToHashSet(),
-        Enum.GetValues<PaissaPhaseFilter>().Where(phase => phase != PaissaPhaseFilter.Any).ToHashSet());
+        Enum.GetValues<PaissaPhaseFilter>().ToHashSet());
     Equal(true, PaissaHousingPolicy.Matches(plot, all, now));
     Equal(true, PaissaHousingPolicy.Matches(plot, all with
     {
@@ -576,27 +589,27 @@ static void HousingPhaseBoundaries()
     var plot = HousingTestPlot();
     var deadline = LotterySchedule.ApplicationAnchorUtc.AddDays(5);
     var resultsEnd = deadline.AddDays(4);
-    Equal(PaissaPhaseFilter.Available, PaissaHousingPolicy.GetPhaseFilter(plot, deadline.AddTicks(-1)));
+    Equal(PaissaPhaseFilter.Entry, PaissaHousingPolicy.GetPhaseFilter(plot, deadline.AddTicks(-1)));
     Equal(PaissaPhaseFilter.Results, PaissaHousingPolicy.GetPhaseFilter(plot, deadline));
     Equal(PaissaPhaseFilter.Results, PaissaHousingPolicy.GetPhaseFilter(plot, resultsEnd.AddTicks(-1)));
-    Equal(PaissaPhaseFilter.Unknown, PaissaHousingPolicy.GetPhaseFilter(plot, resultsEnd));
-    Equal(PaissaPhaseFilter.Unknown, PaissaHousingPolicy.GetPhaseFilter(plot, deadline.AddDays(9)));
+    Equal(PaissaPhaseFilter.Entry, PaissaHousingPolicy.GetPhaseFilter(plot, resultsEnd));
+    Equal(PaissaPhaseFilter.Results, PaissaHousingPolicy.GetPhaseFilter(plot, deadline.AddDays(9)));
 
     var cases = new (PaissaPlotListing Plot, PaissaPhaseFilter Phase, string Label)[]
     {
-        (plot with { LottoPhaseUntil = null }, PaissaPhaseFilter.Available, "Entry"),
-        (plot with { LottoPhaseUntil = long.MaxValue }, PaissaPhaseFilter.Available, "Entry"),
+        (plot with { LottoPhaseUntil = null }, PaissaPhaseFilter.Results, "Results"),
+        (plot with { LottoPhaseUntil = long.MaxValue }, PaissaPhaseFilter.Results, "Results"),
         (plot, PaissaPhaseFilter.Results, "Results"),
         (plot with { LottoPhase = 2 }, PaissaPhaseFilter.Results, "Results"),
-        (plot with { LottoPhase = 3 }, PaissaPhaseFilter.Unavailable, "Unavailable"),
-        (plot with { LottoPhase = null }, PaissaPhaseFilter.Unknown, "Unknown"),
-        (plot with { LottoPhase = 99 }, PaissaPhaseFilter.Unknown, "Unknown"),
+        (plot with { LottoPhase = 3 }, PaissaPhaseFilter.Results, "Results"),
+        (plot with { LottoPhase = null }, PaissaPhaseFilter.Results, "Results"),
+        (plot with { LottoPhase = 99 }, PaissaPhaseFilter.Results, "Results"),
     };
     foreach (var (listing, phase, label) in cases)
     {
         Equal(phase, PaissaHousingPolicy.GetPhaseFilter(listing, deadline));
         Equal(label, PaissaHousingPolicy.GetPhaseLabel(listing, deadline));
-        foreach (var filterPhase in Enum.GetValues<PaissaPhaseFilter>().Where(value => value != PaissaPhaseFilter.Any))
+        foreach (var filterPhase in Enum.GetValues<PaissaPhaseFilter>())
         {
             var filters = new PaissaHousingFilters(new HashSet<int?> { 339 }, new HashSet<int?> { 0 },
                 new HashSet<PaissaEligibilityFilter> { PaissaEligibilityFilter.FreeCompany },
@@ -604,7 +617,9 @@ static void HousingPhaseBoundaries()
             Equal(phase == filterPhase, PaissaHousingPolicy.Matches(listing, filters, deadline));
         }
     }
-    Equal(PaissaPhaseFilter.Results, PaissaHousingPolicy.GetPhaseFilter(plot with { LottoPhase = 2 }, resultsEnd));
+    Equal(PaissaPhaseFilter.Entry, PaissaHousingPolicy.GetPhaseFilter(plot with { LottoPhase = 2 }, resultsEnd));
+    Equal(PaissaPhaseFilter.Results, PaissaHousingPolicy.GetPhaseFilter(plot, LotterySchedule.ApplicationAnchorUtc.AddTicks(-1)));
+    Equal(PaissaPhaseFilter.Entry, PaissaHousingPolicy.GetPhaseFilter(plot, LotterySchedule.ApplicationAnchorUtc));
 }
 
 static void HousingDeadlineBoundaries()
@@ -616,11 +631,12 @@ static void HousingDeadlineBoundaries()
     Equal<DateTimeOffset?>(entryEnd, PaissaHousingPolicy.GetDisplayedPhaseDeadline(plot, entryEnd.AddTicks(-1)));
     Equal<DateTimeOffset?>(resultsEnd, PaissaHousingPolicy.GetDisplayedPhaseDeadline(plot, entryEnd));
     Equal<DateTimeOffset?>(resultsEnd, PaissaHousingPolicy.GetDisplayedPhaseDeadline(plot, resultsEnd.AddTicks(-1)));
-    Equal<DateTimeOffset?>(entryEnd, PaissaHousingPolicy.GetDisplayedPhaseDeadline(plot, resultsEnd));
-    Equal<DateTimeOffset?>(entryEnd, PaissaHousingPolicy.GetDisplayedPhaseDeadline(plot, entryEnd.AddDays(9)));
-    Equal<DateTimeOffset?>(entryEnd, PaissaHousingPolicy.GetDisplayedPhaseDeadline(plot with { LottoPhase = 2 }, entryEnd));
-    Equal<DateTimeOffset?>(null, PaissaHousingPolicy.GetDisplayedPhaseDeadline(plot with { LottoPhaseUntil = null }, entryEnd));
-    Equal<DateTimeOffset?>(null, PaissaHousingPolicy.GetDisplayedPhaseDeadline(plot with { LottoPhaseUntil = long.MaxValue }, entryEnd));
+    Equal<DateTimeOffset?>(entryEnd.AddDays(9), PaissaHousingPolicy.GetDisplayedPhaseDeadline(plot, resultsEnd));
+    Equal<DateTimeOffset?>(resultsEnd.AddDays(9), PaissaHousingPolicy.GetDisplayedPhaseDeadline(plot, entryEnd.AddDays(9)));
+    Equal<DateTimeOffset?>(resultsEnd, PaissaHousingPolicy.GetDisplayedPhaseDeadline(plot with { LottoPhase = 2 }, entryEnd));
+    Equal<DateTimeOffset?>(resultsEnd, PaissaHousingPolicy.GetDisplayedPhaseDeadline(plot with { LottoPhaseUntil = null }, entryEnd));
+    Equal<DateTimeOffset?>(resultsEnd, PaissaHousingPolicy.GetDisplayedPhaseDeadline(plot with { LottoPhaseUntil = long.MaxValue }, entryEnd));
+    Equal<DateTimeOffset?>(null, PaissaHousingPolicy.GetDisplayedPhaseDeadline(plot with { PurchaseSystem = null }, entryEnd));
     Equal(original, plot.LottoPhaseUntil);
     Equal(1, plot.LottoPhase);
 }
@@ -631,9 +647,10 @@ static void HousingClosureCountdown()
     var entryEnd = LotterySchedule.ApplicationAnchorUtc.AddDays(5);
     Equal("Closes in 4d 00:00:00", PaissaHousingPolicy.GetClosureCountdown(plot, entryEnd));
     Equal("Closes in 00:00:01", PaissaHousingPolicy.GetClosureCountdown(plot, entryEnd.AddTicks(-1)));
-    Equal("Closure time has passed.", PaissaHousingPolicy.GetClosureCountdown(plot, entryEnd.AddDays(4)));
-    Equal("Closure time is unknown.", PaissaHousingPolicy.GetClosureCountdown(plot with { LottoPhaseUntil = null }, entryEnd));
-    Equal("Closure time is unknown.", PaissaHousingPolicy.GetClosureCountdown(plot with { LottoPhaseUntil = long.MinValue }, entryEnd));
+    Equal("Closes in 5d 00:00:00", PaissaHousingPolicy.GetClosureCountdown(plot, entryEnd.AddDays(4)));
+    Equal("Closes in 4d 00:00:00", PaissaHousingPolicy.GetClosureCountdown(plot with { LottoPhaseUntil = null }, entryEnd));
+    Equal("Closes in 4d 00:00:00", PaissaHousingPolicy.GetClosureCountdown(plot with { LottoPhaseUntil = long.MinValue }, entryEnd));
+    Equal("Closure time is unknown.", PaissaHousingPolicy.GetClosureCountdown(plot with { PurchaseSystem = 6 }, entryEnd));
     Equal("Closes in 4d 00:00:00", PaissaHousingPolicy.GetClosureCountdown(plot, entryEnd.ToOffset(TimeSpan.FromHours(-6))));
 }
 
@@ -671,9 +688,9 @@ static void HousingDeadlineSorting()
     var inferred = HousingTestPlot() with { PlotNumber = 2 };
     var earlier = inferred with { PlotNumber = 3, LottoPhase = 2, LottoPhaseUntil = now.AddDays(1).ToUnixTimeSeconds() };
     var sameClose = inferred with { PlotNumber = 1, LottoPhase = 2, LottoPhaseUntil = LotterySchedule.ApplicationAnchorUtc.AddDays(9).ToUnixTimeSeconds() };
-    var unknown = inferred with { PlotNumber = 4, LottoPhaseUntil = null };
+    var unknown = inferred with { PlotNumber = 4, PurchaseSystem = null };
     var rows = new[] { (snapshot, inferred), (snapshot, earlier), (snapshot, unknown), (snapshot, sameClose) };
-    Equal("3,1,2,4", string.Join(",", PaissaHousingSorting.Sort(rows, 9, true, now).Select(row => row.Plot.PlotNumber)));
+    Equal("1,2,3,4", string.Join(",", PaissaHousingSorting.Sort(rows, 9, true, now).Select(row => row.Plot.PlotNumber)));
     Equal("1,2,3,4", string.Join(",", PaissaHousingSorting.Sort(rows, 9, false, now).Select(row => row.Plot.PlotNumber)));
 }
 
@@ -684,12 +701,12 @@ static void HousingPhaseSorting()
     var inferred = HousingTestPlot() with { PlotNumber = 2 };
     var entry = inferred with { PlotNumber = 1, LottoPhaseUntil = now.AddDays(1).ToUnixTimeSeconds() };
     var unavailable = inferred with { PlotNumber = 3, LottoPhase = 3 };
-    var unknown = inferred with { PlotNumber = 4, LottoPhase = null };
+    var unknown = inferred with { PlotNumber = 4, PurchaseSystem = null };
     var rows = new[] { (snapshot, inferred), (snapshot, entry), (snapshot, unknown), (snapshot, unavailable) };
     Equal("1,2,3,4", string.Join(",", PaissaHousingSorting.Sort(rows, 7, true, now).Select(row => row.Plot.PlotNumber)));
-    Equal("3,2,1,4", string.Join(",", PaissaHousingSorting.Sort(rows, 7, false, now).Select(row => row.Plot.PlotNumber)));
+    Equal("1,2,3,4", string.Join(",", PaissaHousingSorting.Sort(rows, 7, false, now).Select(row => row.Plot.PlotNumber)));
     var refreshed = rows.Select(row => (snapshot with { DownloadedAtUtc = now.AddDays(2) }, row.Item2));
-    Equal("3,2,1,4", string.Join(",", PaissaHousingSorting.Sort(refreshed, 7, false, now).Select(row => row.Plot.PlotNumber)));
+    Equal("1,2,3,4", string.Join(",", PaissaHousingSorting.Sort(refreshed, 7, false, now).Select(row => row.Plot.PlotNumber)));
     Equal(PaissaSourceFreshness.Current, PaissaHousingPolicy.GetSourceFreshness(inferred, now));
 }
 
@@ -760,11 +777,92 @@ static void HousingCharacterReload()
     Equal("73", string.Join(",", restoredWorlds));
 }
 
+static void HousingPurchaseSystemPhase()
+{
+    var entry = LotterySchedule.ApplicationAnchorUtc.AddHours(3);
+    var results = LotterySchedule.ApplicationAnchorUtc.AddDays(5);
+    foreach (int? flags in new int?[] { null, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 99 })
+    {
+        var lottery = flags is 1 or 3 or 5 or 7;
+        var unknown = flags is null or < 0 or > 7;
+        foreach (var rawPhase in new int?[] { null, 0, 1, 2, 3, 99 })
+        {
+            var plot = HousingTestPlot() with
+            {
+                PurchaseSystem = flags, LottoPhase = rawPhase,
+                LottoPhaseUntil = entry.AddDays(-9).ToUnixTimeSeconds(), LottoEntries = null,
+            };
+            var original = plot with { };
+            Equal(lottery ? "Entry" : unknown ? "Unknown" : "Not applicable",
+                PaissaHousingPolicy.GetPhaseLabel(plot, entry));
+            Equal(lottery ? "Results" : unknown ? "Unknown" : "Not applicable",
+                PaissaHousingPolicy.GetPhaseLabel(plot, results));
+            Equal<DateTimeOffset?>(lottery ? results : null,
+                PaissaHousingPolicy.GetDisplayedPhaseDeadline(plot, entry));
+            Equal<DateTimeOffset?>(lottery ? results.AddDays(4) : null,
+                PaissaHousingPolicy.GetDisplayedPhaseDeadline(plot, results));
+            Equal(lottery ? PaissaPhaseFilter.Entry : PaissaPhaseFilter.Unknown,
+                PaissaHousingPolicy.GetPhaseFilter(plot, entry));
+            Equal(original, plot);
+            Equal<long?>(null, plot.LottoEntries);
+            var counted = plot with { LottoEntries = 17 };
+            PaissaHousingPolicy.GetPhaseLabel(counted, results.AddDays(4));
+            Equal<long?>(17, counted.LottoEntries);
+        }
+    }
+}
+
+static void HousingPhaseFilterMigration()
+{
+    var cases = new (int Old, int Expected)[]
+    {
+        (0, 0), (1, 0), (2, 1), (4, 2), (8, 3), (16, 4),
+        (2 | 4, 3), (2 | 16, 5), (4 | 16, 6), (8 | 16, 7), (15, 3), (31, 7),
+    };
+    foreach (var (old, expected) in cases)
+    {
+        var config = new Configuration { Version = 8, HousingPhaseMask = old, DisplayLotteryTimesInUtc = true };
+        config.Normalize();
+        Equal(expected, config.HousingPhaseMask);
+        Equal(Configuration.CurrentVersion, config.Version);
+        config.Normalize();
+        Equal(expected, config.HousingPhaseMask);
+        Equal(true, config.DisplayLotteryTimesInUtc);
+    }
+    for (var mask = 0; mask <= 7; mask++)
+    {
+        var config = new Configuration { HousingPhaseMask = mask };
+        config.Normalize();
+        Equal(mask, config.HousingPhaseMask);
+    }
+}
+
+static void HousingDistrictReload()
+{
+    foreach (var districts in new List<int>[] { [], [339], [340, 979], [339, 340, 341, 641, 979] })
+    {
+        var config = new Configuration { HousingDistrictIds = districts };
+        for (var reload = 0; reload < 3; reload++)
+        {
+            var json = Newtonsoft.Json.JsonConvert.SerializeObject(config);
+            config = Newtonsoft.Json.JsonConvert.DeserializeObject<Configuration>(json)!;
+            config.Normalize();
+            Equal(string.Join(",", districts), string.Join(",", config.HousingDistrictIds));
+        }
+    }
+    var missing = Newtonsoft.Json.JsonConvert.DeserializeObject<Configuration>("{}")!;
+    missing.Normalize();
+    Equal("339,340,341,641,979", string.Join(",", missing.HousingDistrictIds));
+    var nullList = Newtonsoft.Json.JsonConvert.DeserializeObject<Configuration>("{\"HousingDistrictIds\":null}")!;
+    nullList.Normalize();
+    Equal("339,340,341,641,979", string.Join(",", nullList.HousingDistrictIds));
+}
+
 static void HousingPreferencesMigration()
 {
     var config = new Configuration { Version = 7, HousingPhaseMask = 31, LastHousingCharacterContentId = 100 };
     config.Normalize();
-    Equal(15, config.HousingPhaseMask);
+    Equal(7, config.HousingPhaseMask);
     config.HousingPhaseMask = 2 | 16;
     config.Normalize();
     Equal(2, config.HousingPhaseMask);
@@ -775,7 +873,7 @@ static void HousingPreferencesMigration()
     Equal("73", string.Join(",", oldConfig.HousingWorldIds));
     config.ResetToDefaults();
     Equal(0UL, config.LastHousingCharacterContentId);
-    Equal(15, config.HousingPhaseMask);
+    Equal(7, config.HousingPhaseMask);
     Equal(0, config.HousingWorldIds.Count);
 }
 

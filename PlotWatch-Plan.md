@@ -4,7 +4,7 @@ Dalamud plugin for FFXIV housing lottery tracking, available-plot discovery, ale
 
 Commands: `/plotwatch` and `/pw`.
 
-> **Status:** Phases 1–2 implemented; Phase 3 multi-world PaissaDB browser and hardening implemented. Release build and offline verification results must be recorded separately from in-game acceptance. Phase 2 schedule/dashboard validated in-game. Bid records, passive capture, alerts, and optional travel remain pending. Sweep automation and local housing capture are out of scope.
+> **Status:** Phases 1–2 implemented; Phase 3 multi-world PaissaDB browser and hardening implemented. Phase 4 character management/manual bid records implemented; user validated manual add/edit and reload persistence, with remaining acceptance checks pending. Release build and offline verification results are recorded separately from in-game acceptance. Phase 2 schedule/dashboard and Phase 3 hardening validated in-game. Phase 5 read-only capture diagnostics implemented; automatic capture is not implemented. Alerts and optional travel remain pending. Sweep automation and local housing capture are out of scope.
 
 ## Product specification
 
@@ -37,7 +37,7 @@ Commands: `/plotwatch` and `/pw`.
 - Outcomes: Pending, Won, Lost, Claimed. Do not infer a loss merely because results period started.
 - Notify once when results become available and when a win is observed; provide configurable claim/refund reminders.
 - Character management supports exclude/re-enable and remove. Excluding stops future capture but preserves records. Removing requires confirmation and deletes that character's saved records; removal alone does not prevent rediscovery.
-- English-first UI and game-message parsing for initial release.
+- English-first UI for initial release. Prefer verified message/sheet identity plus numeric SeString parameters for capture, avoiding localized rendered-text matching. Whether the housing custom-sheet confirmation is exposed through a suitable event remains unverified; English fallback requires explicit approval and validation.
 - Persist bid history and user settings locally per plugin installation. Single-client scope; no cross-client shared storage requirement.
 
 ### PaissaDB house browser and alerts
@@ -138,8 +138,10 @@ Commands: `/plotwatch` and `/pw`.
 
 - Read-only API diagnostics, typed parsing, one-based display addresses, retained last-successful snapshots, paced/cancellable refreshes, and failure/partial-response protection.
 - Multi-world selection with home-world, data-center, all, and clear shortcuts; saved district/size/eligibility/phase filters and sortable results.
-- Entry, Results, Unavailable, and Unknown use one typed classification for labels, filtering, and sorting.
-- Expired Entry becomes Results only during the matching cycle’s Results period; its displayed close becomes that Results-period end. Original API phase/deadline remain unchanged and available in tooltips.
+- Recognized lottery purchase flags (1, 3, 5, 7) use the global schedule for Entry/Results and the active phase deadline, regardless of missing, expired, or Closed API reports. This supersedes the earlier per-plot Entry-to-Results inference.
+- Recognized non-lottery flags (0, 2, 4, 6) show Not applicable; missing/unrecognized flags show Unknown, with no closing time. Filters are Entry, Results, and Unknown / Not applicable. Original API phase/deadline remain unchanged in cache and available in tooltips/diagnostics.
+- Configuration version 9 migrates legacy phase selections once: Entry/Results preserved, Unavailable mapped to both, Unknown preserved. New/default/reset masks select all three categories.
+- Last observed replaces Updated. Ward sweeps can refresh vacancy observations without refreshing lottery details; global phase never guarantees continued vacancy. Entrants remain reported values or Unknown, never fabricated zero or reset on rollover.
 - Source freshness is separate: observations two or more phases old are Stale; invalid/missing timestamps have Unknown freshness. Cache download age is not source age.
 - Effective Closes sorting and live countdowns use the same cached schedule time as phase interpretation. Unknown deadlines/counts sort last in either direction.
 - Character changes select the new character’s home world, including same-world alts. Same-character manual choices survive framework updates and reloads. Selection works before directory download and saves once per character transition.
@@ -151,6 +153,8 @@ Commands: `/plotwatch` and `/pw`.
 - Offline regression tests cover phase/filter boundaries, effective deadlines/countdowns, freshness boundaries, sorting, character-selection policy, and configuration reset/migration.
 - In-game validation: user confirmed the patch works on 2026-10-29. Detailed regression checklist (individual results not recorded): Entry-only filtering; Phase/Closes sorting both directions; inferred Results deadline; hovered countdown; UTC/local toggle; different-world and same-world character switches; switch while window closed; manual-selection persistence; plugin reload and delayed directory load.
 - Offline tests do not validate ImGui rendering, native character-state reads, or live Dalamud lifecycle behavior.
+- Global-phase verification on 2026-11-01: Release build passed with zero warnings/errors; 97/97 offline tests passed. Coverage includes all recognized purchase flags, missing/unrecognized flags, raw Closed/null phases, exact boundaries/rollover, deadline/countdown/sorting consistency, unchanged reports/counts, and idempotent filter migration. Main/debug windows consume the shared cached schedule snapshot.
+- Pending in-game global-phase acceptance: Midgardsormr → Mist → Ward 5 Plot 11 should show Entry, closing 2026-11-06 15:00 UTC (or local equivalent), and Unknown entrants without opening its placard. Check filter migration, Phase/Closes sorting, tooltips, and UTC/local display.
 
 **Deliverables**
 
@@ -170,6 +174,39 @@ Commands: `/plotwatch` and `/pw`.
 
 ### Phase 4 — Character management and bid records
 
+**Status:** Implemented; latest Release build and 75/75 offline tests pass, including bid-entry logging coverage. User confirmed manual bid entry works and that editing keeps one updated record which survives reload. Remaining UI/character-lifecycle and recovery checks remain pending.
+
+**Implementation notes**
+
+- Framework-thread character discovery runs at a monotonic one-second cadence. Tracks name/home world and stable identity without exposing Content IDs in UI/logs. Same-character metadata updates do not create duplicate characters.
+- My Bids provides manual add/edit, active/history/current-character filters, stable cycle/address sorting, explicit outcomes, deliberate duplicate override, and confirmed deletion.
+- Unknown size/ticket/entry/cycle remain unknown. A cycle reference enables calculated Results/claim estimates; manual or game-observed deadline fields override estimates. Existing game-observed dates take precedence over manual edits.
+- Character controls appear in My Bids and Settings. Exclusion preserves records and prevents discovery/new bids; existing records remain editable. Removal deletes associated records with confirmation. Removal alone permits rediscovery on next login; remove-and-exclude suppresses it until explicitly re-enabled.
+- `bids.json` is separate from settings/API cache: versioned schema, atomic temporary-file replacement, previous-save `.bak`, save-before-publish mutation, and visible read-only recovery after corrupt/newer-file loads.
+- Recovery from a valid backup requires confirmation, preserves the unreadable primary in a uniquely named file, and retains the good backup. Unsupported newer schema blocks downgrade recovery; preserve files and update the plugin instead.
+- Dashboard shows pending/won-unclaimed counts and up to five Results/claim dates with provenance and countdowns. Reaching dates never changes outcome or generates notifications.
+- Legacy schema version 0 uses the same record shape and migrates in memory to version 1; loading does not rewrite the file.
+- Bid-entry additions/edits log at Debug after persistence succeeds. Validation, duplicate, read-only, and save failures log at Warning. Logs include plot/type/cycle/ticket/outcome/deadlines and never character Content IDs.
+- Delete-record dialog was changed to force viewport-center positioning every frame and disable saved positioning after appearance-only centering did not work for the user. Final centering behavior still needs explicit in-game confirmation.
+
+**Offline verification**
+
+- Tests cover discovery, exclusion/removal/rediscovery, manual validation, duplicate override, explicit outcomes, deadline precedence, character switching, schema migration, restart persistence, backup recovery, corruption/newer-schema protection, and save/restore failures.
+- Offline tests do not cover native character-state reads, ImGui dialogs, or live plugin lifecycle.
+
+**In-game acceptance**
+
+- Confirmed by user: manual entry; district edit from Mist (339) to Lavender Beds (340); exactly one updated record; updated data survives reload. Corresponding added/updated Debug logs were supplied.
+- Example test record: world 99, ward 1, plot 1, FC, unknown ticket, Pending, cycle -1. Calculated results 2026-10-28 15:00 UTC and claim deadline 2026-11-01 15:00 UTC match the schedule. Negative cycle IDs are valid relative to the 2026-11-01 anchor.
+- Remaining checks below are not claimed as passed:
+
+- Log in/switch characters, including same-world alts; inspect registry and current-character filter.
+- Add a manual bid; verify world/district/one-based address/type/ticket and UTC input instructions. Enter historical or unknown dates; validate input errors.
+- Edit record/outcome; confirm duplicate warning and deliberate override; cancel and confirm record deletion.
+- Verify active/history filtering, calculated/manual date labels, dashboard countdowns, and UTC/local display preference.
+- Exclude/re-enable; remove/cancel removal; confirm remove-only rediscovery on next login and remove-and-exclude behavior.
+- Reload plugin and confirm records/exclusions persist. Validate backup recovery using copied test files only, not the sole copy of real bid history.
+
 **Deliverables**
 
 - Detect characters using PlotWatch and associate each bid with its character/world.
@@ -187,9 +224,222 @@ Commands: `/plotwatch` and `/pw`.
 
 ### Phase 5 — Passive bid capture and results
 
+**Status:** Source and installed-game sheet investigation completed through 2026-10-30. Read-only Housing Capture debug probe implemented; automatic capture is not implemented. Prefer structured message identity/parameters over HLT's English text regexes, if housing's runtime message path exposes them. Latest verification: Release build and 95/95 offline tests pass. User reports validate loading 35 templates and expanded Timers/placard coverage; latest combined-message/SeString decoding fixes need live retesting.
+
+#### User decisions and investigation boundaries
+
+- Closely follow Housing Lotto Tracker's capture method, but inspect actual source rather than treating README/comments as authoritative. Do not silently reproduce assumptions; ask when evidence or behavior is ambiguous.
+- User confirmed English client and month/day/year displayed dates. This is a fallback parsing preference, not proof of how every template formats dates.
+- FC/Personal capture must be confirmed later when bidding opens. Until evidence is explicit, keep purchase type Unknown; do not default to Personal.
+- Stay passive: no bidding, claiming, refunds, travel, or other automated game actions.
+- Reference inspection and SqPack reads were read-only. No game files changed.
+
+#### Authoritative source locations
+
+- Knowledge base: `D:\Coding\C#\ffxiv-knowledge` (`/mnt/d/Coding/C#/ffxiv-knowledge`). Start with `knowledge/INDEX.md`; checked-out source wins over notes.
+- Housing Lotto Tracker: `reference-plugins/HousingLottoTracker`, upstream `https://github.com/dexcss/HousingLottoTracker`, inspected commit `eaefb43d5be2044b8ebe60081e2cd3365667b4a8`. Added as a root submodule; nested dependencies were not initialized.
+- HLT navigation note: `knowledge/repositories/housing-lotto-tracker.md`.
+- AOCCH reference: `D:\Coding\C#\Another_Occult_Crescent_Helper` (`/mnt/d/Coding/C#/Another_Occult_Crescent_Helper`). Relevant implementation: `AOCCH/Automation/TreasureHintTracker.cs`; additional ID-based classification in `AOCCH/Shopping/ShopPurchaseController.cs`.
+- Installed game: `D:\FINAL FANTASY XIV - A Realm Reborn` (`/mnt/d/FINAL FANTASY XIV - A Realm Reborn`). Actual Excel sheets are packed in `game/sqpack/ffxiv/0a0000.win32.dat0`, indexed by the corresponding `.index`/`.index2` files.
+- Lumina is the reader library, not a distribution of the game sheets. The local game archives contain original EXH/EXD data and binary SeStrings.
+- CSV navigation exports: `external/ffxiv-datamining/csv/{en,de,fr,ja}/custom/001/CmnDefHousingSignboard_00135.csv` and `csv/en/Addon.csv`. Note lowercase **b** in `Signboard`; an earlier case-sensitive search missed it.
+- CSV exports render placeholders as UNKNOWN/sample values and may show only one conditional branch. They are not lossless SeString payload dumps. Raw installed-game data was inspected to verify branches and parameters below.
+
+#### HLT's actual capture method
+
+Paths in this subsection are relative to `reference-plugins/HousingLottoTracker/HousingLottoTracker/`.
+
+1. **Chat creates entries:** `Plugin.cs:458–491` subscribes to `IChatGui.ChatMessage`, reads rendered text, parses through `Game/ChatLotteryParser.cs`, then calls `Data/BidStore.CaptureFromChat`. Chat supplies address/ticket/results text; a cached last-viewed placard is not required for its normal capture path. Plot size comes from the `HousingLandSet` sheet using territory and plot.
+2. **Status recovers entries:** `Plugin.Poll` runs approximately every two seconds. `Game/PlacardReader.FindLotteryStatusText` scans loaded visible addons for lottery-status text; `Game/LotteryStatusParser.cs` parses address, optional size, ticket, and type; `Data/BidStore.CaptureFromStatus` creates/updates a record.
+3. **Placards enrich:** `Game/PlacardSaleHook.cs` reads structured sale information and calls `Data/BidStore.CaptureFromSaleInfo`, which only updates existing records. `Game/PlacardReader.cs` provides a text-scrape fallback. Contrary to the simplified README description, the scrape path can create a record when it finds an entry number or win hint.
+4. **Matching:** HLT keys by character Content ID, territory, ward, plot, and cycle. World and purchase type are absent from its key. It picks the first matching record and can overwrite a conflicting ticket; repeated status/placard observations can persist repeatedly rather than perform no-op deduplication.
+5. **Outcomes:** HLT listens to `SelectYesno` for broad win wording and picks the first pending current-cycle record for the character. Its periodic tick also marks old pending records Expired. These outcome behaviors are separate from entry capture and must not be imported as part of the initial capture patch.
+
+**Assumptions/risks found in HLT (not approved PlotWatch behavior)**
+
+- Chat parser does not validate channel/sender and matches an entry substring rather than requiring a complete successful-confirmation envelope.
+- Missing FC wording defaults to Personal. Status parser likewise represents missing/unknown type as false/Personal. Plot tenant eligibility is not independently equivalent to the type of bid actually placed, especially on mixed-eligibility plots.
+- Character context uses home world; no independently established destination world is supplied by the confirmation text. Do not relabel home/current world without evidence.
+- Unrecognized district can fall back to current territory.
+- Dates try month/day before day/month, use OS-local conversion, and have a loose parsing fallback. Numeric timestamps would avoid these language/date-order ambiguities if exposed.
+- Historical status recovery assigns observation time as entry time. PlotWatch must keep actual historical entry time Unknown unless observed independently.
+- Status parser requires a numeric ticket. README says the game does not retain the ticket, while status parser expects one; live availability must be verified, not assumed.
+- Placard hook uses a signature plus function-start offset and raw struct offsets. Successful installation does not prove current-patch correctness. It treats phase-end as results-start even during Results; raw Addon row 7044 confirms phase-specific deadline meaning.
+- No license file was found in the inspected HLT checkout. Independently implement the method unless permission/license for copying implementation is established.
+- HLT targets Dalamud API 15/.NET 10, matching PlotWatch. API compatibility does not validate live game memory layouts.
+
+#### Verified raw custom-sheet confirmation
+
+Virtual game files:
+
+- `exd/custom/001/cmndefhousingsignboard_00135.exh`
+- `exd/custom/001/cmndefhousingsignboard_00135_0_en.exd`
+
+The header confirms 11 rows, two string columns. Column 0 is the symbolic message key; Column 1 is the message SeString.
+
+| Row | Key suffix | Meaning |
+| --- | --- | --- |
+| 6 | `LAND_LOTTERY_LOTTED` | Successful entry: “You have submitted a lottery entry for plot …, ward …, …. Your lottery number is …. Results will be available from ….” |
+| 7 | `LAND_LOTTERY_LOTTED_2` | Instructions to inspect Estate → Timers under Duty |
+| 8 | `LAND_LOTTERY_REFUND_FULL_GIL` | Cannot claim refund because player cannot carry more gil |
+| 9 | `LAND_LOTTERY_GUIDE` | Already entered a different plot; shows pending-entry address, not evidence of a new entry |
+| 10 | `LAND_LOTTERY_GUIDE_OK` | Accept label |
+
+Raw row 6 parameter references:
+
+| SeString local number | Meaning established from template |
+| --- | --- |
+| `lnum1` | Territory ID, resolved through `TerritoryType` → `PlaceName` |
+| `lnum2` | Ward as displayed by the message |
+| `lnum3` | Plot as displayed by the message |
+| `lnum4` | Player's lottery ticket number |
+| `lnum5` | Input to results-date/time formatting; runtime value/unit must still be verified |
+
+Row 6 includes conditional time/date formatting expressions. Do not parse the CSV sample timestamp as real data. Do not assume template local-number numbering equals a zero-based event-parameter array without checking the relevant runtime API.
+
+The user supplied row 9's expanded text: “You have submitted a lottery entry for a different plot. Please confirm the status of your lottery entry by accessing the same placard by which you entered the lottery.” Followed by `Pending Entry`, plot `lnum3`, ward `lnum2`, and district resolved from territory `lnum1`. This may be recovery evidence, but provides no ticket/type/deadline and must never be interpreted as a successful new bid.
+
+#### Verified Addon sheet messages
+
+Read original SeStrings from `exd/addon.exh` and `exd/addon_0_en.exd` in the installed game. Conditional alternatives below were verified in raw payloads, not inferred from one CSV rendering.
+
+| Row | Message/branches | Use |
+| --- | --- | --- |
+| 7040 | Available / Unavailable to free companies. | Plot eligibility, not entry-type proof |
+| 7041 | Available / Unavailable to private buyers. | Plot eligibility, not entry-type proof |
+| 7043 | First-come-first-served / Selling via lottery. (Current participants: count) / Currently unavailable for purchase | Placard purchase/availability wording |
+| 7044 | Accepting entries until datetime / Results period ends datetime | Deadline interpretation must follow observed phase |
+| 7046 | Deposit-confirmation dialog: personal plot / free company plot / generic plot of land; separate eligibility branches for FC-only, Personal-only, or both | Potential explicit type context before confirmation; still needs runtime correlation/validation |
+| 7122 | Winning number, congratulations, winner-of-this-lottery purchase/claim prompt; Plot available until datetime | Explicit win-prompt template; not proof purchase completed |
+| 7123 | Claim forfeited; cancellation fee and remaining-refund prompt | Separate forfeiture/refund evidence, not automatic Lost/Claimed |
+| 7124 | Winning number; better luck in future; full-refund prompt | Separate unsuccessful-entry evidence; accepting refund is a different action |
+| 7126 | Winning number for this plot / no participants | Plot result, not by itself a character outcome |
+| 7127 | View Lottery Results | Action label, not outcome evidence |
+| 7128 | Sole entrant won by default; purchase/claim prompt and Plot available until datetime | Alternate explicit win prompt; not completed claim |
+| 7129 | There was one participant in this lottery. | Participant-count wording |
+| 8841 | Must be on Home World to retrieve data. | Status-availability constraint |
+| 8843 | Housing Lottery Status | Status window title |
+| 8844 | Entry period in progress. | Status phase label |
+| 8845 | Results period in progress. | Status phase label |
+| 8846 | Current Entry | Status section label |
+| 8847 | Plot, ordinal ward, district, and size (Small/Medium/Large branches) | Status address/size |
+| 8848 | Lottery Number: number | Status ticket |
+| 8849 | Type of Entry: Free Company Representative / Private Buyer | Both actual type branches present; live extraction remains to be validated |
+
+HLT's alternatives such as “results are in”, “entitled to purchase”, and “claim” + “winnings” were not established as specific housing templates. Broad words also occur in unrelated content; do not treat them as verified housing evidence.
+
+#### AOCCH's localized ID/parameter approach
+
+Verified in `AOCCH/Automation/TreasureHintTracker.cs`:
+
+- Subscribes/unsubscribes `IChatGui.LogMessage`.
+- Classifies `message.LogMessageId` against configured known IDs.
+- Reads numeric arguments with `TryGetIntParameter(index, out value)` rather than matching localized rendered text. Examples include direction at index 0 and survey counts at indexes 0/1; these are **AOCCH-specific mappings**, not housing mappings.
+- Diagnostic probe enumerates `ParameterCount`, integer/string parameters, `LogMessageId`, and `GameData.RowId`. Do not copy general string dumping into normal PlotWatch logging.
+- Some AOCCH fallback logic infers unique plausible parameter pairs; PlotWatch should use verified housing mappings, not silently import those heuristics.
+
+Verified in knowledge-base Dalamud/ClientStructs source:
+
+- `platform/Dalamud/Dalamud/Game/Chat/LogMessage.cs`: `ILogMessage.GameData` is specifically a `RowRef<LogMessage>`; `LogMessageId` refers to that sheet, not arbitrary Addon/custom rows.
+- `platform/Dalamud/Dalamud/Game/Gui/ChatGui.cs`: event is raised while iterating `RaptureLogModule.LogMessageQueue`.
+- `platform/FFXIVClientStructs/FFXIVClientStructs/FFXIV/Client/UI/Misc/RaptureLogModule.cs`: queue is documented as messages from the LogMessage sheet. Separate printing APIs also exist.
+- `ILogMessage.Parameters` is valid only during the callback. Copy required primitive values into an immutable observation; never retain native pointers or the event wrapper.
+- `FormatLogMessageForDebugging()` can cause side effects such as sound playback; do not call it in normal capture.
+
+**Critical unresolved boundary:** custom-sheet row 6 is **not** automatically `LogMessageId = 6`. Searches of the exported LogMessage sheet did not locate the housing successful-entry text. Determine whether housing uses the queued LogMessage event, another event that retains custom-sheet identity/parameters, or a separate native evaluation/printing path. Absence in CSV alone is not runtime proof.
+
+#### Revised implementation checkpoints
+
+**Implemented diagnostic patch (2026-10-30; in-game checks pending)**
+
+- Debug window → **Housing Capture** has Inspect sheet templates, Arm 15-second probe, Stop, Clear results, and Copy diagnostic report. Probe options are session-only and do not change configuration/bid data. Run all checks does not implicitly arm it.
+- `Diagnostics/HousingProbeState.cs` owns monotonic expiry, character-bound invalidation, immutable view snapshots, candidate-only correlation, report generation, and a 200-entry history. Verbose event output is limited to 400 events per probe; the stop/expiry entry reports rate-limit suppression. Clear stops the probe and clears history while retaining inspected templates.
+- `Diagnostics/HousingCaptureDiagnostics.cs` subscribes to standard ChatMessage/LogMessage and addon PostSetup/PreFinalize lifecycle events. Disposal unsubscribes. No native hooks, SeString evaluation, game callbacks, chat suppression, actions, or bid-store access are introduced.
+- All sheet/native reads occur on the framework thread. Templates use the current client's sheet language without English fallback; raw macros, nested literal-branch prefixes, payload structure, and local-number references are reported. Local references are NOT assumed to be zero-based event indexes.
+- Current character availability, home/current world IDs, territory, and language are sampled outside rendering. Private character identity only invalidates the probe and is never exported. Logout/character switch stops probing, including same-world alts; territory/world changes invalidate cached addon snapshots.
+- Default LogMessage observation is metadata-only for the previously located housing-related LogMessage rows 3497/6099. **All LogMessage IDs** opt-in records arbitrary IDs/counts with values withheld; it does not identify them as housing events. To inspect numeric arguments for a discovered LogMessage ID, enter that ID and re-arm. Only up to 32 integer arguments are exposed for that explicitly selected ID; strings/entities/addresses remain withheld. Never enter custom-sheet row 6 merely because successful entry uses that row.
+- Chat candidate inspection is limited to SystemMessage/SystemError/Notice/Urgent channels; player chat and Echo are ignored. Rendered text is compared with localized static template evidence for diagnostic correlation only. No automatic capture/parser is enabled. Raw chat is withheld; reports contain candidate template identities, static evidence and bounded short numeric text tokens, with long identifiers redacted.
+- Visible addon snapshots are sampled at most every 500 ms, with bounded unit/node/value counts and change deduplication. Housing-named addons or addons containing known template evidence are inspected; chat-log addons are excluded. Reports identify addon names, AtkValue indexes/types, supported 32-bit numeric/bool/float values, relevant node indexes/IDs, and candidate template evidence. Arbitrary strings, 64-bit values and pointers are withheld. Complete template-based address matching is considered only after separate housing evidence identifies an addon.
+- Optional lifecycle discovery logs addon names/events only, to locate unknown status-window names. This is time-limited metadata, not a dump of unrelated addon contents.
+- Debug logs report arm/stop/template-summary actions; Verbose logs hold event detail; Warning logs report missing/unavailable evidence. No general chat-text logging or `FormatLogMessageForDebugging()` call is used.
+- Offline regressions cover exact expiry, clock jumps, logout/same-world character changes, context boundaries, stop/clear, history/log limits, template references, conditional-branch candidate matching, redaction, immutable views, and reports. They do not validate native memory layout, addon discovery, live event channels/ordering, or actual housing numeric mappings.
+
+**First in-game diagnostic runs**
+
+1. Reload plugin, open diagnostics from the bug icon or Settings, then select Housing Capture.
+2. Click Inspect sheet templates. Verify custom row 6 exposes lnum1–lnum5 and Addon 7044/8849 retain both conditional branches. Missing rows/languages are warnings, not runtime values.
+3. Enable All LogMessage IDs (metadata only) if investigating the unknown event path. Leave selected numeric LogMessage ID at 0 initially. Arm, open Housing Lottery Status, then Stop/Copy report. Repeat with a known Results-period placard and then a different plot. Cancel any claim/refund prompt; do not accept it for testing.
+4. If a plausible LogMessage ID is observed, select that actual ID, re-arm and repeat the manual interaction to inspect integer arguments. Do not assume the ID corresponds to an Addon/custom row.
+5. Test expiry, unrelated UI, logout/character switch, and Clear. No bid records should change as a result of this probe.
+6. Wait for Entry to inspect a real intended successful bid; cancelled entry and actual success need separate runs. Verify Personal and FC evidence separately. If standard events do not expose custom identity/parameters, the result is inconclusive and a separate native-probe decision is required.
+
+**Live diagnostic findings and coverage fixes (2026-10-30)**
+
+- Initial LogMessage template reads incorrectly used raw column 0. Installed EXH inspection established raw text column 5; the probe now uses typed `LogMessage.Text`. User confirmed all 35 templates loaded after this fix.
+- Timers trace: `ContentsInfo` has 313 AtkValues. Value 30 matched Housing Lottery Status; value 32 matched Results period in progress. User clicked status but no detail popup opened. This does not establish absence of a bid or the reason the detail view did not open.
+- LogMessage IDs 501/533 in that trace correspond to action-ready/action-use text in reference data, not verified housing confirmation IDs.
+- Placard trace: `HousingSignBoard` had 5 AtkValues; node 64 matched Available to free companies; node 56 contained an address-like line with numeric tokens 19/5. User confirmed this was a for-sale plot they had not bid on. These observations describe a plot, not proof of an entry. FC eligibility is not an FC-bid confirmation.
+- Two coverage gaps were identified: the first 128 of 313 Timers values were inspected, and placard traversal was top-level only. Undefined entries and a single long snapshot also obscured evidence; short-prefix matching falsely treated Plot Details/Plot Size labels as addresses.
+- Patch: inspect up to 512 AtkValues, preserving original indexes and omitting Undefined/Null entries. Report total/inspected counts and explicit value-limit status.
+- Patch: traverse nested component UldManagers and child/sibling links with frame-local cycle guards, at most 1024 discovered nodes and depth 8. Report node counts/limit status; no native addresses are retained or exported.
+- Patch: emit lossless numbered snapshot parts with bodies capped at 2400 characters instead of one truncation-prone line. Preserve evidence beyond the old first 12 matches. History/rate caps remain, with dropped/suppressed reporting.
+- Patch: Addon/8847 candidate matching now requires the complete localized template address structure, valid plot/ward bounds, and district text; optional size suffix is supported. Short labels alone cannot match. This is still diagnostic correlation, not native identity or bid evidence.
+- Added Copy events only, retaining context/status/events but omitting repeated template dumps. Use this for the next Timers/placard retests.
+- New offline regressions cover label/incomplete-address rejection, synthetic localized address structures, lossless chunking including index 312 evidence, and events-only export. They do not validate the native traversal or prove support for untested client languages.
+- Retest validated Timers coverage: all 313/313 values inspected, 205 nodes traversed, no limit hit, and Undefined noise omitted. The report still contained only the status title/Results summary, not an individual entry. Placard retest traversed 92 nodes with no limit hit and matched a complete address with numeric tokens 26/20; the label-only address false positives were gone.
+- User clarified they have no placed bid and cannot bid during the current Results period. Screenshot of Mist Ward 20 Plot 26 showed Small, available to both FC and Personal, currently unavailable for purchase, and no displayed deadline. Therefore missing bid/ticket/deadline evidence in these runs is not a failed successful-entry capture test; that test awaits Entry and a real intended bid.
+- Screenshot exposed two further probe issues: whole-node start matching omitted later messages in a combined eligibility/status block, and text nodes used UTF-8 ToString rather than decoding SeString payloads. AtkValue strings already used SeString extraction.
+- Patch: both node and AtkValue strings now use the same bounded ReadOnlySeString.ExtractText path. Only complete payload-free localized sheet messages from Addon 7040/7041/7043 may match within a combined block, with boundary checks. Static message extraction does not evaluate templates or obtain live lnums. Address matching remains full-structure; chat/outcome matching is not broadened.
+- Added regressions using the screenshot's FC + Personal + unavailable text, single-line/multiline variants, incomplete/embedded-word rejection, and scope checks preventing inline chat/outcome expansion. These test pure matching policy, not live native text decoding. Repeat the placard probe after reload and send Copy events only.
+
+**A — Read-only evidence probe (first)**
+
+- Trace housing's actual runtime message emission/evaluation path before choosing the API. Prefer verified sheet/message identity and primitive parameter extraction over English text regexes.
+- Add explicit, short-lived diagnostics for relevant IDs/sheet identity and numeric arguments, not persistent all-chat logging. Never expose character Content IDs or native addresses.
+- Verify local-number indexing, ward/plot numbering, results-time value/unit, sender/event provenance, character/world context, and actual type evidence while Entry is open.
+- Inspect status/placard context already available during Results without fabricating a successful-entry event or spending gil only to test capture.
+- No automatic record writes during probing. If the localized path is unavailable, ask before adopting an English-text fallback or a more invasive native hook.
+
+**B — Confirmed entry capture**
+
+- Use the verified successful-entry identity and mappings, with source/language-independent parsing where supported. Numeric date/time extraction should avoid month/day and DST parsing ambiguities; displayed times still use the saved UTC/local preference.
+- Associate with valid current character and an evidenced destination world. Do not assume current world and home world are interchangeable.
+- Missing ticket/size/type remains Unknown. FC/Personal still awaits live verification; the generic success template itself has no explicit purchase-type field.
+- Apply bounds checks and reject ambiguous/conflicting evidence. Invalid district must not silently become the current territory.
+- Reconcile uniquely against existing manual records using character/world/address/cycle/type evidence. Preserve record ID, existing outcome, and unrelated manual fields; fill unknowns only with supported evidence. Unknown type/cycle may match only if remaining evidence uniquely identifies the record.
+- Repeated confirmation is a no-op; no duplicate record or unnecessary save. Conflicting tickets/multiple matches require review. Never use manual duplicate override automatically.
+- Respect exclusions and read-only storage; save before publishing mutations. Failed saves remain retryable without duplicate creation.
+- Add an explicit capture setting, initially opt-in for validation. Manual records remain usable independently.
+- Review field-level provenance and migrate schema safely if ticket/cycle/address enrichment needs finer evidence ownership than the current grouped DetailsSource.
+
+**C — Status recovery and placard enrichment**
+
+- Follow HLT's status-recovery/placard-enrichment split, but use verified sheet/addon/native identity and parameters where available instead of scanning unrelated text.
+- Recovery must not invent historical entry time. Keep missing fields unknown; do not require ticket if a different verified identity can safely establish the entry.
+- Placards update known matching bids only; ordinary browsing, targeting, failed entry, and cancelled confirmation create no records.
+- If pre-entry type context from Addon 7046 is used, bind it to character/session/world/address, verify event ordering, expire/invalidate it on cancellation or context changes, and consume only after successful confirmation. Do not invent a timeout before observing actual timing.
+- Keep entry-end/results-start distinct from results-end/claim deadline. Eligibility is separate from actual bid type. Do not mark a derived claim deadline as directly observed unless the game supplied it.
+- Validate hook signature, memory layout, thread context, phase semantics, and failure fallback for the installed patch before enabling native hooks.
+
+**D — Outcome observation (separate follow-up)**
+
+- Use explicit, correctly associated win/loss/claim evidence. A win prompt is not completed purchase/claim, and refund availability is not refund collection.
+- No generic congratulatory matching, first-pending-record selection, or outcome changes from time passage. Keep existing Pending/Won/Lost/Claimed policy; do not import HLT's Expired behavior as an unrequested change.
+- Notifications belong to the alert/reminder phase, not the initial capture patch.
+
+#### Tests and live acceptance for capture
+
+- Unit tests against production policies for verified message IDs/parameters (or explicitly approved fallback fixtures), missing/mistyped/out-of-range arguments, unknown IDs, district/world mismatches, date/cycle boundaries, and localization independence.
+- Context tests for character/logout/territory changes, stale or conflicting type evidence, cancelled/failed entries, and event ordering.
+- Reconciliation tests for new capture, unique manual enrichment, duplicate observations, repeated status recovery, unknown fields, ticket conflicts, multiple matches, exclusions, outcome preservation, and save failures/retry.
+- Persistence tests for any provenance migration, stable record IDs/history, reload, and newer-schema protection.
+- In-game: unrelated placard and cancellation create nothing; a real intended bid creates exactly one correct record; reopen status/placard and reload without duplicates; verify recovery and manual-record enrichment; disabled/excluded capture creates nothing.
+- Personal and FC capture require separate runtime evidence. Do not claim untested languages/paths work merely because a localized template exists.
+- Use an actual bid the user intends to place; do not spend gil or perform a synthetic game action just to test capture.
+
 **Deliverables**
 
-- Capture English bid-confirmation messages passively.
+- Capture successful bid-confirmation evidence passively, preferably by verified sheet/message identity and parameters. English rendered-text fallback is a separate decision if the structured path cannot be established.
 - Recover existing bids from Housing Lottery Status and enrich a known bid from its placard.
 - Unrelated placard browsing never creates bid records.
 - Outcomes: Pending, Won, Lost, Claimed. Capture results and claim reminders when evidence supports them.

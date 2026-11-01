@@ -37,10 +37,26 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService]
     internal static IPlayerState PlayerState { get; private set; } = null!;
 
+    [PluginService]
+    internal static IClientState ClientState { get; private set; } = null!;
+
+    [PluginService]
+    internal static IDataManager DataManager { get; private set; } = null!;
+
+    [PluginService]
+    internal static IChatGui ChatGui { get; private set; } = null!;
+
+    [PluginService]
+    internal static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
+
     private readonly WindowSystem windowSystem = new("PlotWatch");
     private readonly Configuration configuration;
     private readonly MainWindow mainWindow;
+    private readonly BidTracker bidTracker;
+    private long nextBidCharacterRefreshTick;
     private readonly DebugWindow debugWindow;
+    private readonly HousingCaptureDiagnostics housingCapture;
+    private readonly HousingProbeState housingProbe;
     private readonly PaissaApiClient paissaApiClient = new();
     private readonly Dictionary<int, PaissaHousingWorldData> housingSnapshots = [];
     private readonly string housingCachePath;
@@ -84,13 +100,29 @@ public sealed class Plugin : IDalamudPlugin
         resetConfirmation = new ConfigurationResetConfirmation(ResetConfigurationAndSave);
         mainCommandRegistration = CreateCommandRegistration(MainCommand, "Open PlotWatch housing and lottery tracker.", true);
         aliasCommandRegistration = CreateCommandRegistration(AliasCommand, "Alias for /plotwatch.", false);
+        bidTracker = new BidTracker(new BidFileStore(Path.Combine(PluginInterface.GetPluginConfigDirectory(), "bids.json")),
+            (success, message) => RecordDiagnostic(success ? DiagnosticSeverity.Debug : DiagnosticSeverity.Warning, message));
+        if (bidTracker.IsReadOnly)
+            Log.Warning("Bid data requires recovery; see My Bids. Existing files have not been overwritten.");
         mainWindow = new MainWindow(configuration, diagnostics, SaveConfiguration, resetConfirmation, OpenDebugWindow,
-            FetchHousingWorlds, () => RefreshHousingWorlds(), CancelHousingRequest);
+            FetchHousingWorlds, () => RefreshHousingWorlds(), CancelHousingRequest, bidTracker);
         LoadHousingCache();
         mainWindow.SetHousingRefreshCooldown(MaxDate(configuration.HousingRefreshCooldownUntilUtc, paissaApiClient.CooldownUntilUtc));
         mainWindow.SetNextAutomaticRefresh(configuration.HousingNextAutomaticRefreshUtc);
         UpdateHomeWorldSelection();
-        debugWindow = new DebugWindow(configuration, diagnostics, QueueDiagnostic);
+        housingProbe = new HousingProbeState((level, message) =>
+        {
+            switch (level)
+            {
+                case HousingProbeLogLevel.Debug: Log.Debug("{HousingProbe:l}", message); break;
+                case HousingProbeLogLevel.Warning: Log.Warning("{HousingProbe:l}", message); break;
+                default: Log.Verbose("{HousingProbe:l}", message); break;
+            }
+        });
+        housingCapture = new HousingCaptureDiagnostics(housingProbe, Framework, PlayerState, DataManager, ChatGui, AddonLifecycle)
+        { CurrentTerritory = () => ClientState.TerritoryType };
+        debugWindow = new DebugWindow(configuration, diagnostics, QueueDiagnostic, housingProbe,
+            options => frameworkActions.Enqueue(() => housingCapture.Arm(options)));
         windowSystem.AddWindow(mainWindow);
         windowSystem.AddWindow(debugWindow);
         UpdateLotterySnapshot();
@@ -122,6 +154,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
+        housingCapture.Dispose();
         PluginInterface.ActivePluginsChanged -= OnActivePluginsChanged;
         lifetimeCancellation.Cancel();
         housingRequestCancellation?.Cancel();
@@ -246,6 +279,9 @@ public sealed class Plugin : IDalamudPlugin
         UpdateLotterySnapshot();
         UpdateHomeWorldSelection();
 
+        UpdateBidCharacter();
+        housingCapture.Tick();
+
         while (frameworkActions.TryDequeue(out var frameworkAction))
             frameworkAction();
 
@@ -265,6 +301,16 @@ public sealed class Plugin : IDalamudPlugin
 
     private void RunDiagnostic(DiagnosticAction action)
     {
+        if (action is DiagnosticAction.InspectHousingTemplates or DiagnosticAction.StopHousingProbe or DiagnosticAction.ClearHousingProbe)
+        {
+            switch (action)
+            {
+                case DiagnosticAction.InspectHousingTemplates: housingCapture.InspectTemplates(); break;
+                case DiagnosticAction.StopHousingProbe: housingCapture.Stop(); break;
+                case DiagnosticAction.ClearHousingProbe: housingCapture.Clear(); break;
+            }
+            return;
+        }
         if (action == DiagnosticAction.CancelPaissaRequest)
         {
             CancelPaissaRequest();
@@ -443,7 +489,7 @@ public sealed class Plugin : IDalamudPlugin
                 var ward = plot.WardNumber is { } wardNumber ? $"{wardNumber + 1} (raw {wardNumber})" : "Unknown";
                 var plotNumber = plot.PlotNumber is { } plotIndex ? $"{plotIndex + 1} (raw {plotIndex})" : "Unknown";
                 RecordDiagnostic(DiagnosticSeverity.Debug,
-                    $"PaissaDB sample plot: world={plot.WorldId?.ToString() ?? "Unknown"}; district={plot.DistrictId?.ToString() ?? "Unknown"}; ward={ward}; plot={plotNumber}; size={DescribePlotSize(plot.Size)}; price={plot.Price?.ToString("N0") ?? "Unknown"}; purchase={PaissaApiParser.DescribePurchaseSystem(plot.PurchaseSystem)}; phase={phaseLabel}; entrants={plot.LottoEntries?.ToString() ?? "Unknown"}; deadline={deadline?.ToString("O") ?? "Unknown"}; first seen={FormatUnixTimestamp(plot.FirstSeenTime)}; last updated={FormatUnixTimestamp(plot.LastUpdatedTime)}.");
+                    $"PaissaDB sample plot: world={plot.WorldId?.ToString() ?? "Unknown"}; district={plot.DistrictId?.ToString() ?? "Unknown"}; ward={ward}; plot={plotNumber}; size={DescribePlotSize(plot.Size)}; price={plot.Price?.ToString("N0") ?? "Unknown"}; purchase={PaissaApiParser.DescribePurchaseSystem(plot.PurchaseSystem)}; PW-global-phase={PaissaHousingPolicy.GetPhaseLabel(plot.PurchaseSystem, response.FetchedAtUtc)}; global-phase-close={PaissaHousingPolicy.GetDisplayedPhaseDeadline(plot.PurchaseSystem, response.FetchedAtUtc)?.ToString("O") ?? "Unknown"}; raw-API-phase={phaseLabel}; entrants={plot.LottoEntries?.ToString() ?? "Unknown"}; raw-API-deadline={deadline?.ToString("O") ?? "Unknown"}; first seen={FormatUnixTimestamp(plot.FirstSeenTime)}; last observed={FormatUnixTimestamp(plot.LastUpdatedTime)}.");
             }
 
             foreach (var warning in inspection.Warnings.Take(12))
@@ -579,7 +625,9 @@ public sealed class Plugin : IDalamudPlugin
         if (tickCount < nextLotteryRefreshTick)
             return;
 
-        mainWindow.SetLotterySnapshot(LotterySchedule.GetSnapshot(DateTimeOffset.UtcNow));
+        var snapshot = LotterySchedule.GetSnapshot(DateTimeOffset.UtcNow);
+        mainWindow.SetLotterySnapshot(snapshot);
+        debugWindow.SetLotterySnapshot(snapshot);
         nextLotteryRefreshTick = tickCount + 1_000;
     }
 
@@ -833,6 +881,27 @@ public sealed class Plugin : IDalamudPlugin
             RecordVerbose(loadedMessage);
         else
             RecordDiagnostic(DiagnosticSeverity.Warning, loadedMessage);
+    }
+
+    private void UpdateBidCharacter()
+    {
+        var tick = Environment.TickCount64;
+        if (tick < nextBidCharacterRefreshTick) return;
+        nextBidCharacterRefreshTick = tick + 1000;
+        try
+        {
+            if (PlayerState.IsLoaded && PlayerState.ContentId != 0 && PlayerState.HomeWorld.RowId > 0)
+            {
+                bidTracker.ObserveCharacter(new TrackedCharacter(PlayerState.ContentId, PlayerState.CharacterName,
+                    (int)PlayerState.HomeWorld.RowId, PlayerState.HomeWorld.Value.Name.ToString()));
+                return;
+            }
+        }
+        catch (Exception)
+        {
+            // Transient game state is retried on the framework thread. Never log character identifiers.
+        }
+        bidTracker.ObserveCharacter(null);
     }
 
     private void UpdateHomeWorldSelection()

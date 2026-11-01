@@ -5,6 +5,7 @@ using Dalamud.Interface.Utility.Raii;
 using Dalamud.Interface.Windowing;
 using PlotWatch.Data;
 using PlotWatch.Diagnostics;
+using PlotWatch.Lottery;
 using PlotWatch.Paissa;
 
 namespace PlotWatch.Windows;
@@ -19,6 +20,7 @@ public sealed class DebugWindow : Window
         (DiagnosticSection.Dependencies, "Dependencies", "Installed/loaded metadata for optional companion plugins."),
         (DiagnosticSection.LotteryClock, "Lottery Clock", "Calculated 9-day housing-lottery schedule and timezone display."),
         (DiagnosticSection.PaissaApi, "PaissaDB API", "Explicit read-only checks against the live PaissaDB API."),
+        (DiagnosticSection.HousingCapture, "Housing Capture", "Read-only, opt-in evidence probe. No automatic capture, bid writes, or game actions."),
         (DiagnosticSection.LogsAndErrors, "Logs & Errors", "Recent diagnostic results retained for this session."),
     ];
 
@@ -26,13 +28,22 @@ public sealed class DebugWindow : Window
     private readonly PluginDiagnostics diagnostics;
     private readonly Action<DiagnosticAction> enqueueAction;
     private DiagnosticSection selectedSection = DiagnosticSection.Overview;
+    private LotteryScheduleSnapshot? lotterySnapshot;
+    private readonly HousingProbeState housingProbe;
+    private readonly Action<HousingProbeOptions> armHousingProbe;
+    private bool probeAllLogIds;
+    private bool probeAddonNames = true;
+    private int probeNumericId;
 
-    public DebugWindow(Configuration configuration, PluginDiagnostics diagnostics, Action<DiagnosticAction> enqueueAction)
+    public DebugWindow(Configuration configuration, PluginDiagnostics diagnostics, Action<DiagnosticAction> enqueueAction,
+        HousingProbeState housingProbe, Action<HousingProbeOptions> armHousingProbe)
         : base("PlotWatch Diagnostics", ImGuiWindowFlags.NoCollapse)
     {
         this.configuration = configuration;
         this.diagnostics = diagnostics;
         this.enqueueAction = enqueueAction;
+        this.housingProbe = housingProbe;
+        this.armHousingProbe = armHousingProbe;
         Size = new Vector2(900, 620);
         SizeCondition = ImGuiCond.FirstUseEver;
         SizeConstraints = new WindowSizeConstraints
@@ -73,6 +84,8 @@ public sealed class DebugWindow : Window
             ImGui.SetWindowFontScale(1f);
         }
     }
+
+    public void SetLotterySnapshot(LotteryScheduleSnapshot snapshot) => lotterySnapshot = snapshot;
 
     public override void PreDraw()
     {
@@ -119,10 +132,72 @@ public sealed class DebugWindow : Window
             case DiagnosticSection.LogsAndErrors:
                 DrawHistory();
                 break;
+            case DiagnosticSection.HousingCapture:
+                DrawHousingCapture();
+                break;
         }
 
         ImGui.Spacing();
-        DrawLatestResult();
+        if (selectedSection != DiagnosticSection.HousingCapture)
+            DrawLatestResult();
+    }
+
+    private void DrawHousingCapture()
+    {
+        var view = housingProbe.View;
+        ImGui.TextWrapped("Probe only: no bids are created, edited, or deleted; no game actions or native hooks. Stop/expiry invalidates observation context. Templates do not reveal live lnum values.");
+        ImGui.TextUnformatted($"{view.Status} Remaining: {view.Remaining.TotalSeconds:F1}s");
+        ImGui.TextUnformatted($"Character available: {view.Context.CharacterAvailable}; home world: {view.Context.HomeWorld}; current world: {view.Context.CurrentWorld}");
+        ImGui.TextUnformatted($"Territory: {view.Context.Territory}; client language: {view.Context.Language}");
+        ImGui.BeginDisabled(view.Armed);
+        ImGui.Checkbox("All LogMessage IDs (metadata only, while armed)", ref probeAllLogIds);
+        ImGui.Checkbox("Discover addon lifecycle names (names only)", ref probeAddonNames);
+        ImGui.SetNextItemWidth(180);
+        ImGui.InputInt("Numeric parameters for selected LogMessage ID (0 = off)", ref probeNumericId);
+        if (probeNumericId < 0) probeNumericId = 0;
+        if (ImGui.Button("Arm 15-second probe"))
+            armHousingProbe(new(probeAllLogIds, probeNumericId > 0 ? (uint)probeNumericId : null, probeAddonNames));
+        ImGui.EndDisabled();
+        ImGui.SameLine();
+        if (ImGui.Button("Stop")) enqueueAction(DiagnosticAction.StopHousingProbe);
+        ImGui.SameLine();
+        if (ImGui.Button("Clear results")) enqueueAction(DiagnosticAction.ClearHousingProbe);
+        if (ImGui.Button("Inspect sheet templates")) enqueueAction(DiagnosticAction.InspectHousingTemplates);
+        ImGui.SameLine();
+        if (ImGui.Button("Copy diagnostic report")) ImGui.SetClipboardText(housingProbe.BuildReport(diagnostics.BuildId));
+        ImGui.SameLine();
+        if (ImGui.Button("Copy events only")) ImGui.SetClipboardText(housingProbe.BuildReport(diagnostics.BuildId, includeTemplates: false));
+        ImGui.TextWrapped("LogMessage IDs belong to the LogMessage sheet, NOT Addon/custom row IDs. All-ID tracing withholds argument values; numeric inspection requires a selected LogMessage ID. Strings, entities, Content IDs, 64-bit values and pointers are withheld. System chat/template matches are candidates only, not native identity proof.");
+
+        if (ImGui.CollapsingHeader($"Sheet templates ({view.Templates.Count})"))
+        {
+            foreach (var template in view.Templates)
+            {
+                if (!ImGui.TreeNode($"{template.Sheet}/{template.Row}##housing-template-{template.Sheet}-{template.Row}")) continue;
+                ImGui.TextUnformatted($"Column {template.Column}; language={template.Language}; lnums=[{string.Join(",", template.LocalNumbers)}]");
+                ImGui.TextWrapped(template.Structure);
+                ImGui.TextWrapped(template.Macro);
+                ImGui.TreePop();
+            }
+        }
+        if (ImGui.CollapsingHeader("Test checklist"))
+        {
+            ImGui.BulletText("A: inspect templates; confirm expected local-number references, not live values.");
+            ImGui.BulletText("B: arm; open Duty > Timers > Estate > Housing Lottery Status; repeat and copy report.");
+            ImGui.BulletText("C: arm; view known placard, close it, view a different plot; cancel claim/refund prompts.");
+            ImGui.BulletText("D: unrelated UI, expiry, logout/character switch; verify context is invalidated.");
+            ImGui.BulletText("E/F: wait for Entry; observe a real intended bid and its status. Verify Personal/FC separately.");
+            ImGui.TextWrapped("Do not spend gil just to test. If no standard event exposes custom-sheet identity/parameters, diagnostics are inconclusive; a separate native-probe decision is required.");
+        }
+        ImGui.Separator();
+        ImGui.TextUnformatted($"Events: {view.Entries.Count}/{HousingProbeState.Capacity}; oldest dropped: {view.Dropped}");
+        if (ImGui.BeginChild("##housing-probe-events", new Vector2(0, 0), true, ImGuiWindowFlags.HorizontalScrollbar))
+            foreach (var entry in view.Entries)
+            {
+                ImGui.TextUnformatted($"{entry.AtUtc:HH:mm:ss.fff} UTC [{entry.Source}]");
+                ImGui.TextWrapped(entry.Detail);
+            }
+        ImGui.EndChild();
     }
 
     private void DrawOverview()
@@ -265,7 +340,9 @@ public sealed class DebugWindow : Window
                 var address = plot.WardNumber is { } ward && plot.PlotNumber is { } number
                     ? $"W{ward + 1} P{number + 1} (raw {ward}/{number})"
                     : "Address unknown";
-                ImGui.BulletText($"{address}; size={FormatSize(plot.Size)}; price={plot.Price?.ToString("N0") ?? "Unknown"}; type={PaissaApiParser.DescribePurchaseSystem(plot.PurchaseSystem)}; phase={PaissaApiParser.DescribeLotteryPhase(plot.LottoPhase)}; entrants={plot.LottoEntries?.ToString() ?? "Unknown"}; deadline={FormatUnix(plot.LottoPhaseUntil)}; updated={FormatUnix(plot.LastUpdatedTime)}");
+                var globalPhase = lotterySnapshot is { } schedule ? PaissaHousingPolicy.GetPhaseLabel(plot.PurchaseSystem, schedule.NowUtc) : "Waiting for schedule";
+                var globalClose = lotterySnapshot is { } clock ? PaissaHousingPolicy.GetDisplayedPhaseDeadline(plot.PurchaseSystem, clock.NowUtc)?.ToString("O") ?? "Unknown" : "Unknown";
+                ImGui.BulletText($"{address}; size={FormatSize(plot.Size)}; price={plot.Price?.ToString("N0") ?? "Unknown"}; type={PaissaApiParser.DescribePurchaseSystem(plot.PurchaseSystem)}; PW global phase={globalPhase}; global close={globalClose}; raw API phase={PaissaApiParser.DescribeLotteryPhase(plot.LottoPhase)}; entrants={plot.LottoEntries?.ToString() ?? "Unknown"}; raw API deadline={FormatUnix(plot.LottoPhaseUntil)}; last observed={FormatUnix(plot.LastUpdatedTime)}");
             }
         }
 

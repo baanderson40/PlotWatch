@@ -10,9 +10,10 @@ using PlotWatch.Paissa;
 
 namespace PlotWatch.Windows;
 
-public sealed class MainWindow : Window
+public sealed partial class MainWindow : Window
 {
     private readonly Configuration configuration;
+    private readonly BidTracker bidTracker;
     private readonly PluginDiagnostics diagnostics;
     private readonly Action saveConfiguration;
     private readonly ConfigurationResetConfirmation resetConfirmation;
@@ -56,10 +57,12 @@ public sealed class MainWindow : Window
         Action openDebugWindow,
         Action fetchHousingWorlds,
         Action refreshHousingWorlds,
-        Action cancelHousingRequest)
+        Action cancelHousingRequest,
+        BidTracker bidTracker)
         : base("PlotWatch")
     {
         this.configuration = configuration;
+        this.bidTracker = bidTracker;
         this.diagnostics = diagnostics;
         this.saveConfiguration = saveConfiguration;
         this.resetConfirmation = resetConfirmation;
@@ -96,7 +99,7 @@ public sealed class MainWindow : Window
             {
                 DrawTab(PlotWatchTab.Dashboard, "Dashboard", DrawDashboard);
                 DrawTab(PlotWatchTab.Houses, "Available Houses", DrawHouses);
-                DrawTab(PlotWatchTab.Bids, "Bids", DrawPlaceholder);
+                DrawTab(PlotWatchTab.Bids, "My Bids", DrawBids);
                 DrawTab(PlotWatchTab.Alerts, "Alerts", DrawPlaceholder);
                 DrawTab(PlotWatchTab.Settings, "Settings", DrawSettings);
                 ImGui.EndTabBar();
@@ -158,9 +161,8 @@ public sealed class MainWindow : Window
                 selectedEligibility.UnionWith(Enum.GetValues<PaissaEligibilityFilter>()
                     .Where(option => option != PaissaEligibilityFilter.Unknown));
                 selectedPhases.UnionWith([
-                    PaissaPhaseFilter.Available,
+                    PaissaPhaseFilter.Entry,
                     PaissaPhaseFilter.Results,
-                    PaissaPhaseFilter.Unavailable,
                     PaissaPhaseFilter.Unknown,
                 ]);
                 initializedPlotFilters = true;
@@ -228,6 +230,8 @@ public sealed class MainWindow : Window
         ImGui.TextUnformatted($"Ends in {LotterySchedule.FormatRemaining(snapshot.Remaining)}");
         ImGui.TextWrapped($"{GetActivePeriodSummary(snapshot.CurrentPhase)} until {FormatOverviewTime(activePeriod.EndsAtUtc)}");
         ImGui.TextWrapped($"Next: {GetPeriodLabel(nextPeriod.Phase)} · {FormatOverviewTime(nextPeriod.StartsAtUtc)}");
+
+        DrawBidSummary(snapshot.NowUtc);
 
         if (!showScheduleDetails)
             return;
@@ -436,10 +440,9 @@ public sealed class MainWindow : Window
     {
         if (!ImGui.CollapsingHeader("Phase", ImGuiTreeNodeFlags.DefaultOpen))
             return;
-        DrawPhaseCheckbox("Entry", PaissaPhaseFilter.Available);
+        DrawPhaseCheckbox("Entry", PaissaPhaseFilter.Entry);
         DrawPhaseCheckbox("Results", PaissaPhaseFilter.Results);
-        DrawPhaseCheckbox("Unavailable", PaissaPhaseFilter.Unavailable);
-        DrawPhaseCheckbox("Unknown", PaissaPhaseFilter.Unknown);
+        DrawPhaseCheckbox("Unknown / Not applicable", PaissaPhaseFilter.Unknown);
     }
 
     private void DrawPhaseCheckbox(string label, PaissaPhaseFilter option)
@@ -530,7 +533,7 @@ public sealed class MainWindow : Window
             .Where(option => option != PaissaEligibilityFilter.Unknown));
         selectedPhases.Clear();
         selectedPhases.UnionWith([
-            PaissaPhaseFilter.Available, PaissaPhaseFilter.Results, PaissaPhaseFilter.Unavailable,
+            PaissaPhaseFilter.Entry, PaissaPhaseFilter.Results,
             PaissaPhaseFilter.Unknown,
         ]);
     }
@@ -648,7 +651,7 @@ public sealed class MainWindow : Window
         ImGui.TableSetupColumn("Phase", ImGuiTableColumnFlags.None, 0, 7);
         ImGui.TableSetupColumn("Entries", ImGuiTableColumnFlags.None, 0, 8);
         ImGui.TableSetupColumn("Closes", ImGuiTableColumnFlags.None, 0, 9);
-        ImGui.TableSetupColumn("Updated", ImGuiTableColumnFlags.None, 0, 10);
+        ImGui.TableSetupColumn("Last observed", ImGuiTableColumnFlags.None, 0, 10);
         ImGui.TableHeadersRow();
 
         var sortSpecs = ImGui.TableGetSortSpecs();
@@ -688,13 +691,16 @@ public sealed class MainWindow : Window
             {
                 ImGui.BeginTooltip();
                 ImGui.TextWrapped(PaissaHousingPolicy.GetPhaseExplanation(plot, asOfUtc));
-                if (displayedDeadline != PaissaApiParser.UnixSecondsToUtc(plot.LottoPhaseUntil))
-                    ImGui.TextUnformatted($"PaissaDB deadline: {FormatDeadline(PaissaApiParser.UnixSecondsToUtc(plot.LottoPhaseUntil))}");
-                ImGui.TextUnformatted($"Displayed close: {FormatDeadline(displayedDeadline)}");
+                ImGui.TextUnformatted($"Raw PaissaDB deadline: {FormatDeadline(PaissaApiParser.UnixSecondsToUtc(plot.LottoPhaseUntil))}");
+                ImGui.TextUnformatted($"Global phase closes: {FormatDeadline(displayedDeadline)}");
                 ImGui.TextUnformatted($"Source freshness: {freshness}");
                 ImGui.EndTooltip();
             }
-            ImGui.TableNextColumn(); ImGui.TextUnformatted(plot.LottoEntries?.ToString() ?? "Unknown");
+            ImGui.TableNextColumn(); ImGui.TextUnformatted(plot.LottoEntries?.ToString() ?? "Not reported");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(plot.LottoEntries is null
+                    ? "PaissaDB has not reported an entrant count. A ward sweep does not necessarily update lottery details."
+                    : "PaissaDB-reported entrants. Counts may belong to an earlier period. A ward sweep does not necessarily update lottery details.");
             ImGui.TableNextColumn(); ImGui.TextUnformatted(FormatDeadline(displayedDeadline));
             if (ImGui.IsItemHovered())
             {
@@ -711,6 +717,7 @@ public sealed class MainWindow : Window
                 ImGui.TextUnformatted($"API address: ward={plot.ApiWardNumber?.ToString() ?? "Unknown"}, plot={plot.ApiPlotNumber?.ToString() ?? "Unknown"}");
                 ImGui.TextUnformatted($"Raw purchase flags: {plot.PurchaseSystem?.ToString() ?? "Unknown"}; raw phase: {plot.LottoPhase?.ToString() ?? "Unknown"}");
                 ImGui.TextUnformatted($"First seen: {FormatUnixSourceTime(plot.FirstSeenTime)}");
+                ImGui.TextWrapped("PaissaDB lists plots reported for sale; continued vacancy is not guaranteed. Last observed can reflect a ward sweep without refreshed lottery details. Download time is separate.");
                 ImGui.TextUnformatted($"Downloaded: {FormatTimestampForDisplay(snapshot.DownloadedAtUtc, includeSeconds: true)}");
                 if (snapshot.Warnings.Count > 0)
                     ImGui.TextWrapped($"World response has {snapshot.Warnings.Count} schema warning(s).");
@@ -819,6 +826,9 @@ public sealed class MainWindow : Window
             saveConfiguration();
         }
 
+        ImGui.Spacing();
+        DrawBidStorageStatus();
+        DrawCharacterManagement();
         ImGui.Spacing();
         DrawDiagnostics();
     }

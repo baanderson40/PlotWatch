@@ -8,11 +8,20 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    </ItemGroup>
+
+    <ItemGroup>
         <Compile Include="..\PlotWatch\Commands\OwnedCommandRegistration.cs" Link="Production\OwnedCommandRegistration.cs" />
         <Compile Include="..\PlotWatch\Data\Configuration.cs" Link="Production\Configuration.cs" />
+        <Compile Include="..\PlotWatch\Data\BidRecords.cs" Link="Production\BidRecords.cs" />
+        <Compile Include="..\PlotWatch\Data\BidStore.cs" Link="Production\BidStore.cs" />
+        <Compile Include="..\PlotWatch\Data\BidTracker.cs" Link="Production\BidTracker.cs" />
         <Compile Include="..\PlotWatch\Data\HousingCharacterSelection.cs" Link="Production\HousingCharacterSelection.cs" />
         <Compile Include="..\PlotWatch\Data\ConfigurationResetConfirmation.cs" Link="Production\ConfigurationResetConfirmation.cs" />
         <Compile Include="..\PlotWatch\Diagnostics\PluginDiagnostics.cs" Link="Production\PluginDiagnostics.cs" />
+        <Compile Include="..\PlotWatch\Diagnostics\HousingProbeState.cs" Link="Production\HousingProbeState.cs" />
+        <Compile Include="..\PlotWatch\Diagnostics\HousingProbeFormatting.cs" Link="Production\HousingProbeFormatting.cs" />
         <Compile Include="..\PlotWatch\Lottery\LotterySchedule.cs" Link="Production\LotterySchedule.cs" />
         <Compile Include="..\PlotWatch\Paissa\PaissaApiParser.cs" Link="Production\PaissaApiParser.cs" />
         <Compile Include="..\PlotWatch\Paissa\PaissaApiClient.cs" Link="Production\PaissaApiClient.cs" />

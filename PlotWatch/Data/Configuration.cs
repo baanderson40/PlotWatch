@@ -6,7 +6,7 @@ namespace PlotWatch.Data;
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public const int CurrentVersion = 8;
+    public const int CurrentVersion = 9;
 
     public int Version { get; set; } = CurrentVersion;
 
@@ -24,10 +24,12 @@ public sealed class Configuration : IPluginConfiguration
 
     public List<int> HousingWorldIds { get; set; } = [];
     public ulong LastHousingCharacterContentId { get; set; }
+    // Json.NET otherwise appends saved selections to the initialized defaults.
+    [Newtonsoft.Json.JsonProperty(ObjectCreationHandling = Newtonsoft.Json.ObjectCreationHandling.Replace)]
     public List<int> HousingDistrictIds { get; set; } = [339, 340, 341, 641, 979];
     public int HousingSizeMask { get; set; } = 7;
     public int HousingEligibilityMask { get; set; } = 7;
-    public int HousingPhaseMask { get; set; } = 15;
+    public int HousingPhaseMask { get; set; } = 7;
     public DateTimeOffset HousingRefreshCooldownUntilUtc { get; set; }
     public DateTimeOffset HousingNextAutomaticRefreshUtc { get; set; }
 
@@ -44,7 +46,16 @@ public sealed class Configuration : IPluginConfiguration
         HousingDistrictIds.RemoveAll(id => id < 0);
         HousingSizeMask &= 7;
         HousingEligibilityMask &= 7;
-        HousingPhaseMask &= 15;
+        if (Version < 9)
+        {
+            // Legacy masks used enum ordinal bits: Any=1 (unused), Entry=2,
+            // Results=4, Unavailable=8, Unknown=16. Availability is no longer a phase.
+            var oldMask = HousingPhaseMask;
+            HousingPhaseMask = ((oldMask & (2 | 8)) != 0 ? 1 : 0)
+                | ((oldMask & (4 | 8)) != 0 ? 2 : 0)
+                | ((oldMask & 16) != 0 ? 4 : 0);
+        }
+        HousingPhaseMask &= 7;
 
         Version = CurrentVersion;
     }
@@ -61,7 +72,7 @@ public sealed class Configuration : IPluginConfiguration
         LastHousingCharacterContentId = 0;
         HousingDistrictIds = [339, 340, 341, 641, 979];
         HousingSizeMask = HousingEligibilityMask = 7;
-        HousingPhaseMask = 15;
+        HousingPhaseMask = 7;
         HousingRefreshCooldownUntilUtc = default;
         HousingNextAutomaticRefreshUtc = default;
         Version = CurrentVersion;
