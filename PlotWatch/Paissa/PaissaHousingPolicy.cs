@@ -16,6 +16,9 @@ public enum PaissaSourceFreshness
     Stale,
 }
 
+public enum PaissaStatusFilter { AcceptingEntries, Results, Unavailable, Unknown }
+public enum PaissaReportTiming { Unverified, NotExpired, Outdated }
+
 public enum PaissaEligibilityFilter
 {
     FreeCompany,
@@ -28,7 +31,9 @@ public sealed record PaissaHousingFilters(
     IReadOnlySet<int?> DistrictIds,
     IReadOnlySet<int?> Sizes,
     IReadOnlySet<PaissaEligibilityFilter> Eligibility,
-    IReadOnlySet<PaissaPhaseFilter> Phases);
+    IReadOnlySet<PaissaPhaseFilter> Phases,
+    IReadOnlySet<PaissaStatusFilter>? Statuses = null,
+    bool IncludeOutdatedReports = true);
 
 public sealed record PaissaHousingWorldData(
     PaissaWorld World,
@@ -38,6 +43,49 @@ public sealed record PaissaHousingWorldData(
 
 public static class PaissaHousingPolicy
 {
+    public static PaissaStatusFilter GetReportedStatusFilter(int? phase) => phase switch
+    {
+        1 => PaissaStatusFilter.AcceptingEntries,
+        2 => PaissaStatusFilter.Results,
+        3 => PaissaStatusFilter.Unavailable,
+        _ => PaissaStatusFilter.Unknown,
+    };
+
+    public static string GetReportedStatusLabel(int? phase) => phase switch
+    {
+        null => "Not reported", 1 => "Accepting entries", 2 => "Results", 3 => "Bidding unavailable", _ => "Unrecognized",
+    };
+
+    public static PaissaReportTiming GetReportedStatusTiming(int? phase, long? deadline, DateTimeOffset asOfUtc)
+        => phase is null || PaissaApiParser.UnixSecondsToUtc(deadline) is not { } time
+            ? PaissaReportTiming.Unverified
+            : time <= asOfUtc ? PaissaReportTiming.Outdated : PaissaReportTiming.NotExpired;
+
+    public static string GetReportedStatusLabel(int? phase, long? deadline, DateTimeOffset asOfUtc)
+        => GetReportedStatusTiming(phase, deadline, asOfUtc) == PaissaReportTiming.Outdated
+            ? "Status outdated — refresh cache" : GetReportedStatusLabel(phase);
+
+    public static string GetReportedStatusExplanation(int? phase, long? deadline, DateTimeOffset asOfUtc)
+    {
+        if (GetReportedStatusTiming(phase, deadline, asOfUtc) == PaissaReportTiming.Outdated)
+            return $"Previous report: {GetReportedStatusLabel(phase)}. Its deadline has passed; current bidding status is unverified. " +
+                "Refresh the housing cache to check for a newer report. PaissaDB may still return an expired report after refresh. " +
+                "This warning concerns the report deadline, not cache download age. Last observed may reflect a ward sweep without refreshed lottery details.";
+        var timing = GetReportedStatusTiming(phase, deadline, asOfUtc) switch
+        {
+            PaissaReportTiming.NotExpired => "Report deadline has not expired; this does not prove recently collected lottery details.",
+            _ => "Report timing unverified: status or deadline is missing/invalid.",
+        };
+        return $"PaissaDB-reported plot status: {GetReportedStatusLabel(phase)}. {timing} " +
+            "Global lottery period is separate and does not guarantee this plot accepts bids. Last observed may reflect a ward sweep without refreshed lottery details.";
+    }
+
+    public static string GetStatusRefreshGuidance(DateTimeOffset asOfUtc, DateTimeOffset cooldownUntilUtc, bool refreshing)
+        => refreshing ? "Housing cache refresh in progress."
+            : cooldownUntilUtc > asOfUtc
+                ? $"Cache refresh available in {LotterySchedule.FormatRemaining(cooldownUntilUtc - asOfUtc)}."
+                : "Cache refresh available now: use the cache refresh control below the filters.";
+
     public static string GetPhaseLabel(PaissaPlotListing plot, DateTimeOffset asOfUtc)
         => GetPhaseLabel(plot.PurchaseSystem, asOfUtc);
 
@@ -80,7 +128,7 @@ public static class PaissaHousingPolicy
     public static string GetPhaseExplanation(PaissaPlotListing plot, DateTimeOffset asOfUtc)
     {
         var interpretation = IsLottery(plot.PurchaseSystem)
-            ? $"PW uses the global housing-lottery schedule: {GetPhaseLabel(plot, asOfUtc)}. This does not confirm continued plot vacancy."
+            ? $"Global housing-lottery period: {GetPhaseLabel(plot, asOfUtc)}. This does not confirm continued vacancy or that this plot accepts bids. See Reported status separately."
             : "No lottery period assigned: purchase system is non-lottery, missing, or unrecognized.";
         return $"{interpretation} Raw PaissaDB phase: {PaissaApiParser.DescribeLotteryPhase(plot.LottoPhase)}.";
     }
@@ -94,11 +142,11 @@ public static class PaissaHousingPolicy
     public static string GetClosureCountdown(PaissaPlotListing plot, DateTimeOffset asOfUtc)
     {
         if (GetDisplayedPhaseDeadline(plot, asOfUtc) is not { } deadline)
-            return "Closure time is unknown.";
+            return "Period end is unknown.";
         var remaining = deadline - asOfUtc;
         return remaining > TimeSpan.Zero
-            ? $"Closes in {LotterySchedule.FormatRemaining(remaining)}"
-            : "Closure time has passed.";
+            ? $"Period ends in {LotterySchedule.FormatRemaining(remaining)}"
+            : "Period end has passed.";
     }
 
     public static bool Matches(PaissaPlotListing plot, PaissaHousingFilters filters, DateTimeOffset asOfUtc)
@@ -109,7 +157,9 @@ public static class PaissaHousingPolicy
             return false;
         if (!filters.Eligibility.Contains(GetEligibility(plot.PurchaseSystem)))
             return false;
-        return filters.Phases.Contains(GetPhaseFilter(plot, asOfUtc));
+        return filters.Phases.Contains(GetPhaseFilter(plot, asOfUtc)) &&
+            (filters.Statuses is null || filters.Statuses.Contains(GetReportedStatusFilter(plot.LottoPhase))) &&
+            (filters.IncludeOutdatedReports || GetReportedStatusTiming(plot.LottoPhase, plot.LottoPhaseUntil, asOfUtc) != PaissaReportTiming.Outdated);
     }
 
     public static PaissaEligibilityFilter GetEligibility(int? purchaseSystem)

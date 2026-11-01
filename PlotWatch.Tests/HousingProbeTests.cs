@@ -24,9 +24,101 @@ internal static class HousingProbeTests
         ("housing probe recognizes combined placard eligibility and status messages", CombinedPlacardMessages),
         ("housing probe inline matches require complete bounded static messages", InlineMessageBoundaries),
         ("housing probe inline matching does not broaden chat or outcome candidates", InlineScope),
+        ("placard diagnostics extract combined zero count and exact displayed deadline", PlacardEntryEvidence),
+        ("placard diagnostics distinguish eligibility status and Results deadline", PlacardOtherEvidence),
+        ("placard diagnostics use localized template shapes and handle line breaks", PlacardLocalizedEvidence),
+        ("placard diagnostics withhold unrelated text and incomplete dynamic fields", PlacardEvidencePrivacy),
+        ("placard address category does not assert Timers template identity", PlacardAddressCategory),
     ];
 
     private static readonly DateTimeOffset Now = new(2026, 10, 30, 15, 0, 0, TimeSpan.Zero);
+
+    private static HousingProbeTemplate[] PlacardTemplates()
+    {
+        const string time = "<settime(lnum1)><if(t_hour,<switch(t_hour,1,2,3,4,5,6,7,8,9,10,11,12,1,2,3,4,5,6,7,8,9,10,11)>,12)>:<sec(t_min)> <if([t_hour>=12],p.m.,a.m.)> <if([gnum77==3],<num(t_day)>/<num(t_mon)>/<num(t_year)>,<num(t_mon)>/<num(t_day)>/<num(t_year)>)>";
+        return new[]
+        {
+            (7040u, "<switch(lnum1,Available to free companies.,Unavailable to free companies.)>"),
+            (7041u, "<switch(lnum1,Available to private buyers.,Unavailable to private buyers.)>"),
+            (7043u, "<switch(lnum1,Selling on a first-come-first-served basis.,Selling via lottery. \\(Current participants: <num(lnum2)>\\),Currently unavailable for purchase.)>"),
+            (7044u, "<switch(lnum2,Accepting entries until " + time + ",Results period ends " + time + ")>."),
+        }.Select(item => HousingProbeState.DescribeTemplate("Addon", item.Item1, 0, "English", item.Item2, "test")).ToArray();
+    }
+
+    private static void PlacardEntryEvidence()
+    {
+        const string text = "Available to free companies. Unavailable to private buyers.\nSelling via lottery. (Current participants: 0)\nAccepting entries until 8:59 a.m. 11/6/2026.";
+        var evidence = HousingPlacardEvidence.Describe(text, PlacardTemplates())!;
+        Equal(true, evidence.Contains("fc-eligibility-text=[Available to free companies.]"));
+        Equal(true, evidence.Contains("personal-eligibility-text=[Unavailable to private buyers.]"));
+        Equal(true, evidence.Contains("purchase-status-text=[Selling via lottery. (Current participants: 0)]"));
+        Equal(true, evidence.Contains("rendered-participants=0"));
+        Equal(true, evidence.Contains("displayed-deadline-text=[Accepting entries until 8:59 a.m. 11/6/2026.]"));
+        Equal(false, evidence.Contains("9:00"));
+        Equal(true, evidence.Contains("NOT native message identity"));
+        Equal(true, evidence.Contains("not converted to Unix time"));
+    }
+
+    private static void PlacardOtherEvidence()
+    {
+        var templates = PlacardTemplates();
+        var both = HousingPlacardEvidence.Describe("Available to free companies. Available to private buyers. Selling via lottery. (Current participants: 17) Results period ends 2:59 p.m. 11/10/2026.", templates)!;
+        Equal(true, both.Contains("rendered-participants=17"));
+        Equal(true, both.Contains("displayed-deadline-text=[Results period ends 2:59 p.m. 11/10/2026.]"));
+        Equal(true, both.Contains("personal-eligibility-text=[Available to private buyers.]"));
+        var unavailable = HousingPlacardEvidence.Describe("Currently unavailable for purchase.", templates)!;
+        Equal(true, unavailable.Contains("purchase-status-text=[Currently unavailable for purchase.]"));
+        Equal(false, unavailable.Contains("rendered-participants="));
+        Equal(false, unavailable.Contains("displayed-deadline-text="));
+        var firstCome = HousingPlacardEvidence.Describe("Selling on a first-come-first-served basis.", templates)!;
+        Equal(false, firstCome.Contains("rendered-participants="));
+    }
+
+    private static void PlacardLocalizedEvidence()
+    {
+        var templates = new[]
+        {
+            HousingProbeState.DescribeTemplate("Addon", 7043, 0, "French",
+                "<switch(lnum1,Vente directe.,Tirage au sort \\(participants : <num(lnum2)>\\),Indisponible.)>", "test"),
+            HousingProbeState.DescribeTemplate("Addon", 7044, 0, "French",
+                "<switch(lnum2,Inscriptions jusqu’au <settime(lnum1)><num(t_day)>/<num(t_mon)>/<num(t_year)>,Fin des résultats le <settime(lnum1)><num(t_day)>/<num(t_mon)>/<num(t_year)>)>.", "test"),
+        };
+        var evidence = HousingPlacardEvidence.Describe("Tirage au sort (participants :\n4)\nInscriptions jusqu’au 6/11/2026.", templates)!;
+        Equal(true, evidence.Contains("rendered-participants=4"));
+        Equal(true, evidence.Contains("displayed-deadline-text=[Inscriptions jusqu’au 6/11/2026.]"));
+    }
+
+    private static void PlacardEvidencePrivacy()
+    {
+        var templates = PlacardTemplates();
+        foreach (var text in new[]
+        {
+            "Selling via lottery. (Current participants: )", "Selling via lottery. (Current participants: 12",
+            "Selling via lottery. (Current participants: 123456789012345678)",
+            "Accepting entries until 8:59 a.m. 11/6/", "Accepting entries until Player Name.",
+            "Unrelated player text 123456789012345678", "xCurrently unavailable for purchase.",
+        }) Equal<string?>(null, HousingPlacardEvidence.Describe(text, templates));
+        var evidence = HousingPlacardEvidence.Describe("Secret Player 123456789012345678\nSelling via lottery. (Current participants: 0)\nPrivate suffix", templates)!;
+        Equal(true, evidence.Contains("rendered-participants=0"));
+        Equal(false, evidence.Contains("Secret"));
+        Equal(false, evidence.Contains("123456789012345678"));
+        Equal(false, evidence.Contains("Private suffix"));
+        Equal<string?>(null, HousingPlacardEvidence.Describe("Lottery Number: 42", templates));
+        // No arbitrary string matching when a future sheet adds an unsupported macro.
+        var unsupported = HousingProbeState.DescribeTemplate("Addon", 7044, 0, "English", "Accepting entries until <str(lnum1)>.", "test");
+        Equal<string?>(null, HousingPlacardEvidence.Describe("Accepting entries until Secret Player.", new[] { unsupported }));
+    }
+
+    private static void PlacardAddressCategory()
+    {
+        var address = HousingProbeState.DescribeTemplate("Addon", 8847, 0, "English",
+            "Plot <num(lnum3)>, <ordinal(lnum2)> Ward, <sheet(PlaceName,lnum1,0)> (<switch(lnum4,Small,Medium,Large)>)", "test");
+        var evidence = HousingProbeFormatting.DescribePlacardAddress("Plot 11, 5th Ward, Mist", new[] { address })!;
+        Equal(true, evidence.Contains("category=placard-address"));
+        Equal(true, evidence.Contains("NOT evidence that the Timers template was invoked"));
+        Equal(false, evidence.Contains("template-candidates="));
+        Equal<string?>(null, HousingProbeFormatting.DescribePlacardAddress("Plot", new[] { address }));
+    }
     private static HousingProbeContext Context() => new(true, 73, 73, 339, "English");
     private static HousingProbeState NewState(Action<HousingProbeLogLevel, string>? log = null)
     {

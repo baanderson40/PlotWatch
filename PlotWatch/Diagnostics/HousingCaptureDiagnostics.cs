@@ -12,7 +12,7 @@ using Lumina.Text.ReadOnly;
 
 namespace PlotWatch.Diagnostics;
 
-/// <summary>Opt-in read-only observation. No hooks, game callbacks, chat suppression, or bid storage.</summary>
+/// <summary>Opt-in observation with a separately enabled, version-gated native probe. No game actions or bid storage.</summary>
 public sealed unsafe class HousingCaptureDiagnostics : IDisposable
 {
     public const string CustomSheet = "custom/001/CmnDefHousingSignboard_00135";
@@ -23,6 +23,9 @@ public sealed unsafe class HousingCaptureDiagnostics : IDisposable
     private readonly IDataManager data;
     private readonly IChatGui chat;
     private readonly IAddonLifecycle addons;
+    private readonly HousingNativeProbe nativeProbe;
+    private byte[] successTemplateBytes = [];
+    private bool nativeRunning;
     private readonly Dictionary<string, string> snapshots = new();
     private HousingProbeTemplate[] templates = [];
     private HousingProbeContext? lastContext;
@@ -32,7 +35,7 @@ public sealed unsafe class HousingCaptureDiagnostics : IDisposable
     private bool disposed;
 
     public HousingCaptureDiagnostics(HousingProbeState state, IFramework framework, IPlayerState player,
-        IDataManager data, IChatGui chat, IAddonLifecycle addons)
+        IDataManager data, IChatGui chat, IAddonLifecycle addons, IGameInteropProvider interop, ISigScanner scanner)
     {
         this.state = state;
         this.framework = framework;
@@ -40,6 +43,7 @@ public sealed unsafe class HousingCaptureDiagnostics : IDisposable
         this.data = data;
         this.chat = chat;
         this.addons = addons;
+        nativeProbe = new HousingNativeProbe(interop, scanner, framework, SampleNativeContext);
         chat.LogMessage += OnLogMessage;
         chat.ChatMessage += OnChatMessage;
         addons.RegisterListener(AddonEvent.PostSetup, OnAddonEvent);
@@ -49,19 +53,40 @@ public sealed unsafe class HousingCaptureDiagnostics : IDisposable
     public void Arm(HousingProbeOptions options)
     {
         RequireFrameworkThread();
+        StopNative();
         UpdateContext();
         snapshots.Clear();
         scanWarningReported = false;
         eventWarnings.Clear();
         nextScanTick = 0;
-        state.Arm(options, Environment.TickCount64, DateTimeOffset.UtcNow);
-        if (templates.Length == 0) InspectTemplates();
+        var armedTick = Environment.TickCount64;
+        state.Arm(options, armedTick, DateTimeOffset.UtcNow);
+        if (templates.Length == 0 || options.NativeSuccess) InspectTemplates();
+        if (options.NativeSuccess)
+        {
+            var nativeStatus = nativeProbe.Arm(successTemplateBytes, armedTick);
+            nativeRunning = nativeStatus.StartsWith("Armed:", StringComparison.Ordinal);
+            state.SetNativeProbeStatus(nativeStatus, DateTimeOffset.UtcNow);
+        }
+        else state.SetNativeProbeStatus("Off; native success probe not requested. No native hook enabled.", DateTimeOffset.UtcNow);
     }
 
-    public void Stop() => state.Stop(DateTimeOffset.UtcNow);
+    public void Stop()
+    {
+        StopNative();
+        state.Stop(DateTimeOffset.UtcNow);
+    }
+
+    private void StopNative()
+    {
+        if (!nativeRunning) return;
+        nativeRunning = false;
+        state.SetNativeProbeStatus(nativeProbe.Stop(), DateTimeOffset.UtcNow);
+    }
 
     public void Clear()
     {
+        StopNative();
         state.Clear(DateTimeOffset.UtcNow);
         snapshots.Clear();
     }
@@ -71,7 +96,10 @@ public sealed unsafe class HousingCaptureDiagnostics : IDisposable
         RequireFrameworkThread();
         UpdateContext();
         var tick = Environment.TickCount64;
-        if (!state.IsActive(tick, DateTimeOffset.UtcNow) || tick < nextScanTick) return;
+        if (!state.IsActive(tick, DateTimeOffset.UtcNow)) { StopNative(); return; }
+        if (nativeRunning)
+            foreach (var observation in nativeProbe.Drain(SampleNativeContext())) Record("NativeSuccess", observation, HousingProbeLogLevel.Debug);
+        if (tick < nextScanTick) return;
         nextScanTick = tick + 500;
         try
         {
@@ -105,6 +133,16 @@ public sealed unsafe class HousingCaptureDiagnostics : IDisposable
 
     private void UpdateContext()
     {
+        var sampled = SampleNativeContext();
+        var context = sampled.Public;
+        if (lastContext != context) snapshots.Clear();
+        lastContext = context;
+        nativeProbe.UpdateContext(sampled);
+        state.UpdateContext(context, sampled.CharacterIdentity, Environment.TickCount64, DateTimeOffset.UtcNow);
+    }
+
+    private HousingNativeContext SampleNativeContext()
+    {
         HousingProbeContext context;
         ulong identity = 0;
         try
@@ -115,9 +153,7 @@ public sealed unsafe class HousingCaptureDiagnostics : IDisposable
                 available ? (int)player.CurrentWorld.RowId : 0, CurrentTerritory(), data.Language.ToString());
         }
         catch (Exception) { context = new(false, 0, 0, 0, data.Language.ToString()); }
-        if (lastContext != context) snapshots.Clear();
-        lastContext = context;
-        state.UpdateContext(context, identity, Environment.TickCount64, DateTimeOffset.UtcNow);
+        return new(identity, context);
     }
 
     // Territory is supplied by the framework's player-context sampler, not read during rendering.
@@ -126,6 +162,7 @@ public sealed unsafe class HousingCaptureDiagnostics : IDisposable
     public void InspectTemplates()
     {
         RequireFrameworkThread();
+        successTemplateBytes = [];
         var found = new List<HousingProbeTemplate>();
         ReadTemplates(CustomSheet, Enumerable.Range(0, 11).Select(value => (uint)value), 1, found);
         ReadTemplates("Addon", AddonRows, 0, found);
@@ -134,7 +171,10 @@ public sealed unsafe class HousingCaptureDiagnostics : IDisposable
         state.SetTemplates(templates, DateTimeOffset.UtcNow);
         var entry = templates.FirstOrDefault(template => template.Sheet == CustomSheet && template.Row == 6);
         if (entry is null || !new[] { 1, 2, 3, 4, 5 }.All(number => entry.LocalNumbers.Contains(number)))
+        {
+            successTemplateBytes = [];
             state.TemplateFailure("Successful-entry template is missing expected lnum1–lnum5 references; re-inspect installed data", DateTimeOffset.UtcNow);
+        }
     }
 
     private void ReadTemplates(string sheetName, IEnumerable<uint> rows, int column, List<HousingProbeTemplate> result)
@@ -163,6 +203,8 @@ public sealed unsafe class HousingCaptureDiagnostics : IDisposable
                         structure.Add(payload.Type == ReadOnlySePayloadType.Macro ? $"Macro:{payload.MacroCode}" : payload.Type.ToString());
                     var macro = value.ToMacroString();
                     if (macro.Length > 16384) { state.TemplateFailure($"{sheetName}/{id}: template exceeds diagnostic bound", DateTimeOffset.UtcNow); continue; }
+                    if (sheetName == CustomSheet && id == 6 && value.ByteLength is >= 16 and <= 1024)
+                        successTemplateBytes = value.Data.ToArray();
                     var prefixes = new List<string>();
                     var staticMessages = new List<string>();
                     CollectBranchPrefixes(value, prefixes, staticMessages, 0);
@@ -267,14 +309,14 @@ public sealed unsafe class HousingCaptureDiagnostics : IDisposable
                 var text = ReadBoundedText(value.String.Value);
                 if (text is null) continue;
                 inspectedText.Add(($"AtkValue[{index}]", text));
-                var candidate = HousingProbeState.DescribeCandidate(text, relevantTemplates);
+                var candidate = DescribeAddonText(name, text, relevantTemplates);
                 if (candidate is not null) { candidates.Add($"AtkValue[{index}]: {candidate}"); valueStrings[index] = candidate; }
             }
         var nodeScan = ReadAddonTextNodes(addon);
         foreach (var (location, text) in nodeScan.Text)
         {
             inspectedText.Add((location, text));
-            var candidate = HousingProbeState.DescribeCandidate(text, relevantTemplates);
+            var candidate = DescribeAddonText(name, text, relevantTemplates);
             if (candidate is not null) candidates.Add($"{location}: {candidate}");
         }
         var knownHousingName = name.Contains("Housing", StringComparison.OrdinalIgnoreCase);
@@ -283,7 +325,9 @@ public sealed unsafe class HousingCaptureDiagnostics : IDisposable
         var addressTemplates = templates.Where(template => template.Sheet == "Addon" && template.Row == 8847).ToArray();
         foreach (var (location, text) in inspectedText)
         {
-            var address = HousingProbeState.DescribeCandidate(text, addressTemplates, allowShortPrefixes: true);
+            var address = name == "HousingSignBoard"
+                ? HousingProbeFormatting.DescribePlacardAddress(text, addressTemplates)
+                : HousingProbeState.DescribeCandidate(text, addressTemplates, allowShortPrefixes: true);
             if (address is not null) candidates.Add($"{location}: {address}");
         }
         var values = new List<string>();
@@ -306,6 +350,11 @@ public sealed unsafe class HousingCaptureDiagnostics : IDisposable
         var summary = $"AtkValues-total={addon->AtkValuesCount}; inspected={inspectedValues}; value-limit-hit={addon->AtkValuesCount > inspectedValues}; " +
             $"defined-values={values.Count}; nodes-visited={nodeScan.Visited}; node/depth-limit-hit={nodeScan.Limited}; " +
             "Undefined/Null omitted; numeric meanings unverified; arbitrary strings/64-bit values/pointers withheld.";
+        if (name == "HousingSignBoard")
+        {
+            var schedule = PlotWatch.Lottery.LotterySchedule.GetSnapshot(DateTimeOffset.UtcNow);
+            summary += $" Separate global calculation: phase={schedule.CurrentPhase}; phase-close-UTC={schedule.CurrentPhaseEndsAtUtc:O}; not decoded from placard display.";
+        }
         var details = new[] { summary }.Concat(values.Select(value => "value[" + value + "]"))
             .Concat(candidates.Distinct().Select(candidate => "evidence[" + candidate + "]")).ToArray();
         var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("; ", details))));
@@ -313,6 +362,14 @@ public sealed unsafe class HousingCaptureDiagnostics : IDisposable
         snapshots[key] = fingerprint;
         foreach (var part in HousingProbeFormatting.SnapshotParts($"addon={key}; {origin}", details))
             Record("Addon", part);
+    }
+
+    private static string? DescribeAddonText(string name, string text, IReadOnlyList<HousingProbeTemplate> relevantTemplates)
+    {
+        var candidate = HousingProbeState.DescribeCandidate(text, relevantTemplates);
+        if (name != "HousingSignBoard") return candidate;
+        var rendered = HousingPlacardEvidence.Describe(text, relevantTemplates);
+        return rendered is null ? candidate : candidate is null ? rendered : $"{candidate}; {rendered}";
     }
 
     private sealed record NodeScan(IReadOnlyList<(string Location, string Text)> Text, int Visited, bool Limited);
@@ -398,6 +455,7 @@ public sealed unsafe class HousingCaptureDiagnostics : IDisposable
         chat.ChatMessage -= OnChatMessage;
         addons.UnregisterListener(OnAddonEvent);
         Stop();
+        nativeProbe.Dispose();
         snapshots.Clear();
     }
 }

@@ -14,6 +14,7 @@ using PlotWatch.Diagnostics;
 using PlotWatch.Lottery;
 using PlotWatch.Paissa;
 using PlotWatch.Windows;
+using PlotWatch.Travel;
 
 namespace PlotWatch;
 
@@ -49,10 +50,17 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService]
     internal static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
 
+    [PluginService]
+    internal static IGameInteropProvider InteropProvider { get; private set; } = null!;
+
+    [PluginService]
+    internal static ISigScanner SigScanner { get; private set; } = null!;
+
     private readonly WindowSystem windowSystem = new("PlotWatch");
     private readonly Configuration configuration;
     private readonly MainWindow mainWindow;
     private readonly BidTracker bidTracker;
+    private readonly PlotTravel plotTravel;
     private long nextBidCharacterRefreshTick;
     private readonly DebugWindow debugWindow;
     private readonly HousingCaptureDiagnostics housingCapture;
@@ -104,8 +112,14 @@ public sealed class Plugin : IDalamudPlugin
             (success, message) => RecordDiagnostic(success ? DiagnosticSeverity.Debug : DiagnosticSeverity.Warning, message));
         if (bidTracker.IsReadOnly)
             Log.Warning("Bid data requires recovery; see My Bids. Existing files have not been overwritten.");
+        plotTravel = new PlotTravel(new LifestreamTravelBackend(PluginInterface, DataManager),
+            () => PlayerState.IsLoaded && PlayerState.ContentId != 0,
+            (success, message) => RecordDiagnostic(success ? DiagnosticSeverity.Debug : DiagnosticSeverity.Warning, message));
+        plotTravel.Refresh();
         mainWindow = new MainWindow(configuration, diagnostics, SaveConfiguration, resetConfirmation, OpenDebugWindow,
-            FetchHousingWorlds, () => RefreshHousingWorlds(), CancelHousingRequest, bidTracker);
+            FetchHousingWorlds, () => RefreshHousingWorlds(), CancelHousingRequest, bidTracker, plotTravel,
+            destination => frameworkActions.Enqueue(() => plotTravel.Start(destination)),
+            () => frameworkActions.Enqueue(() => plotTravel.Stop()));
         LoadHousingCache();
         mainWindow.SetHousingRefreshCooldown(MaxDate(configuration.HousingRefreshCooldownUntilUtc, paissaApiClient.CooldownUntilUtc));
         mainWindow.SetNextAutomaticRefresh(configuration.HousingNextAutomaticRefreshUtc);
@@ -119,7 +133,7 @@ public sealed class Plugin : IDalamudPlugin
                 default: Log.Verbose("{HousingProbe:l}", message); break;
             }
         });
-        housingCapture = new HousingCaptureDiagnostics(housingProbe, Framework, PlayerState, DataManager, ChatGui, AddonLifecycle)
+        housingCapture = new HousingCaptureDiagnostics(housingProbe, Framework, PlayerState, DataManager, ChatGui, AddonLifecycle, InteropProvider, SigScanner)
         { CurrentTerritory = () => ClientState.TerritoryType };
         debugWindow = new DebugWindow(configuration, diagnostics, QueueDiagnostic, housingProbe,
             options => frameworkActions.Enqueue(() => housingCapture.Arm(options)));
@@ -280,6 +294,7 @@ public sealed class Plugin : IDalamudPlugin
         UpdateHomeWorldSelection();
 
         UpdateBidCharacter();
+        plotTravel.Refresh();
         housingCapture.Tick();
 
         while (frameworkActions.TryDequeue(out var frameworkAction))
@@ -489,7 +504,7 @@ public sealed class Plugin : IDalamudPlugin
                 var ward = plot.WardNumber is { } wardNumber ? $"{wardNumber + 1} (raw {wardNumber})" : "Unknown";
                 var plotNumber = plot.PlotNumber is { } plotIndex ? $"{plotIndex + 1} (raw {plotIndex})" : "Unknown";
                 RecordDiagnostic(DiagnosticSeverity.Debug,
-                    $"PaissaDB sample plot: world={plot.WorldId?.ToString() ?? "Unknown"}; district={plot.DistrictId?.ToString() ?? "Unknown"}; ward={ward}; plot={plotNumber}; size={DescribePlotSize(plot.Size)}; price={plot.Price?.ToString("N0") ?? "Unknown"}; purchase={PaissaApiParser.DescribePurchaseSystem(plot.PurchaseSystem)}; PW-global-phase={PaissaHousingPolicy.GetPhaseLabel(plot.PurchaseSystem, response.FetchedAtUtc)}; global-phase-close={PaissaHousingPolicy.GetDisplayedPhaseDeadline(plot.PurchaseSystem, response.FetchedAtUtc)?.ToString("O") ?? "Unknown"}; raw-API-phase={phaseLabel}; entrants={plot.LottoEntries?.ToString() ?? "Unknown"}; raw-API-deadline={deadline?.ToString("O") ?? "Unknown"}; first seen={FormatUnixTimestamp(plot.FirstSeenTime)}; last observed={FormatUnixTimestamp(plot.LastUpdatedTime)}.");
+                    $"PaissaDB sample plot: world={plot.WorldId?.ToString() ?? "Unknown"}; district={plot.DistrictId?.ToString() ?? "Unknown"}; ward={ward}; plot={plotNumber}; size={DescribePlotSize(plot.Size)}; price={plot.Price?.ToString("N0") ?? "Unknown"}; purchase={PaissaApiParser.DescribePurchaseSystem(plot.PurchaseSystem)}; global-period={PaissaHousingPolicy.GetPhaseLabel(plot.PurchaseSystem, response.FetchedAtUtc)}; period-end={PaissaHousingPolicy.GetDisplayedPhaseDeadline(plot.PurchaseSystem, response.FetchedAtUtc)?.ToString("O") ?? "Unknown"}; reported-status={PaissaHousingPolicy.GetReportedStatusLabel(plot.LottoPhase, plot.LottoPhaseUntil, response.FetchedAtUtc)}; report-timing={PaissaHousingPolicy.GetReportedStatusTiming(plot.LottoPhase, plot.LottoPhaseUntil, response.FetchedAtUtc)}; raw-API-phase={plot.LottoPhase?.ToString() ?? "Not reported"} ({phaseLabel}); entrants={plot.LottoEntries?.ToString() ?? "Not reported"}; raw-API-deadline={deadline?.ToString("O") ?? "Unknown"} (raw {plot.LottoPhaseUntil?.ToString() ?? "Not reported"}); first seen={FormatUnixTimestamp(plot.FirstSeenTime)}; last observed={FormatUnixTimestamp(plot.LastUpdatedTime)}; downloaded={response.FetchedAtUtc:O}.");
             }
 
             foreach (var warning in inspection.Warnings.Take(12))

@@ -5,13 +5,16 @@ using System.Text.RegularExpressions;
 namespace PlotWatch.Diagnostics;
 
 public enum HousingProbeLogLevel { Debug, Verbose, Warning }
-public sealed record HousingProbeOptions(bool AllLogMessageIds = false, uint? NumericLogMessageId = null, bool AddonNames = true);
+public sealed record HousingProbeOptions(bool AllLogMessageIds = false, uint? NumericLogMessageId = null, bool AddonNames = true, bool NativeSuccess = false);
 public sealed record HousingProbeContext(bool CharacterAvailable, int HomeWorld, int CurrentWorld, uint Territory, string Language);
 public sealed record HousingProbeEntry(DateTimeOffset AtUtc, string Source, string Detail);
 public sealed record HousingProbeTemplate(string Sheet, uint Row, int Column, string Language, string Macro, string Structure,
     string Prefix, IReadOnlyList<int> LocalNumbers, IReadOnlyList<string>? BranchPrefixes = null, IReadOnlyList<string>? StaticMessages = null);
 public sealed record HousingProbeView(bool Armed, TimeSpan Remaining, string Status, HousingProbeContext Context,
-    HousingProbeOptions Options, IReadOnlyList<HousingProbeEntry> Entries, IReadOnlyList<HousingProbeTemplate> Templates, int Dropped);
+    HousingProbeOptions Options, IReadOnlyList<HousingProbeEntry> Entries, IReadOnlyList<HousingProbeTemplate> Templates, int Dropped)
+{
+    public string NativeProbeStatus { get; init; } = "Off; no native hook requested.";
+}
 
 /// <summary>Bounded diagnostic history only. No dependency on bid storage or game actions.</summary>
 public sealed class HousingProbeState(Action<HousingProbeLogLevel, string>? log = null)
@@ -32,10 +35,11 @@ public sealed class HousingProbeState(Action<HousingProbeLogLevel, string>? log 
     private int dropped;
     private int recordedEvents;
     private int suppressedEvents;
+    private string nativeProbeStatus = "Off; no native hook requested.";
 
     public HousingProbeView View
     {
-        get { lock (gate) return new(armed, remaining, status, context, options, entries.ToArray(), templates.ToArray(), dropped); }
+        get { lock (gate) return new(armed, remaining, status, context, options, entries.ToArray(), templates.ToArray(), dropped) { NativeProbeStatus = nativeProbeStatus }; }
     }
 
     public void UpdateContext(HousingProbeContext next, ulong identity, long tick, DateTimeOffset now)
@@ -115,6 +119,15 @@ public sealed class HousingProbeState(Action<HousingProbeLogLevel, string>? log 
     public void TemplateFailure(string sheet, DateTimeOffset now)
     {
         lock (gate) AddCore(now, "Templates", $"Unavailable: {Clean(sheet)}. No language fallback or runtime parameter mapping assumed.", HousingProbeLogLevel.Warning);
+    }
+
+    public void SetNativeProbeStatus(string value, DateTimeOffset now)
+    {
+        lock (gate)
+        {
+            nativeProbeStatus = Clean(value);
+            AddCore(now, "NativeProbe", nativeProbeStatus, HousingProbeLogLevel.Debug);
+        }
     }
 
     private void CheckExpiry(long tick, DateTimeOffset now)
@@ -225,6 +238,7 @@ public sealed class HousingProbeState(Action<HousingProbeLogLevel, string>? log 
         result.AppendLine("READ-ONLY: no bid records created/changed; no game actions. Template matches are candidates, not native message identity.");
         result.AppendLine($"status={view.Status}; remaining={view.Remaining.TotalSeconds:F1}s; character-available={view.Context.CharacterAvailable}; home-world={view.Context.HomeWorld}; current-world={view.Context.CurrentWorld}; territory={view.Context.Territory}; language={view.Context.Language}");
         result.AppendLine($"all-log-IDs={view.Options.AllLogMessageIds}; numeric-log-ID={view.Options.NumericLogMessageId?.ToString() ?? "none"}; dropped-oldest={view.Dropped}");
+        result.AppendLine($"native-success-opt-in={view.Options.NativeSuccess}; native-probe={view.NativeProbeStatus}");
         foreach (var template in includeTemplates ? view.Templates : [])
         {
             result.AppendLine($"TEMPLATE {template.Sheet}/{template.Row} column={template.Column} language={template.Language}; lnums=[{string.Join(",", template.LocalNumbers)}]; {template.Structure}");

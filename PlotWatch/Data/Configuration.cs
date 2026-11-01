@@ -6,7 +6,7 @@ namespace PlotWatch.Data;
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public const int CurrentVersion = 9;
+    public const int CurrentVersion = 10;
 
     public int Version { get; set; } = CurrentVersion;
 
@@ -30,6 +30,8 @@ public sealed class Configuration : IPluginConfiguration
     public int HousingSizeMask { get; set; } = 7;
     public int HousingEligibilityMask { get; set; } = 7;
     public int HousingPhaseMask { get; set; } = 7;
+    public int HousingStatusMask { get; set; } = 15;
+    public bool HousingIncludeOutdatedReports { get; set; } = true;
     public DateTimeOffset HousingRefreshCooldownUntilUtc { get; set; }
     public DateTimeOffset HousingNextAutomaticRefreshUtc { get; set; }
 
@@ -56,6 +58,12 @@ public sealed class Configuration : IPluginConfiguration
                 | ((oldMask & 16) != 0 ? 4 : 0);
         }
         HousingPhaseMask &= 7;
+        if (Version < 10)
+        {
+            HousingStatusMask = 15;
+            HousingIncludeOutdatedReports = true;
+        }
+        HousingStatusMask &= 15;
 
         Version = CurrentVersion;
     }
@@ -73,6 +81,8 @@ public sealed class Configuration : IPluginConfiguration
         HousingDistrictIds = [339, 340, 341, 641, 979];
         HousingSizeMask = HousingEligibilityMask = 7;
         HousingPhaseMask = 7;
+        HousingStatusMask = 15;
+        HousingIncludeOutdatedReports = true;
         HousingRefreshCooldownUntilUtc = default;
         HousingNextAutomaticRefreshUtc = default;
         Version = CurrentVersion;

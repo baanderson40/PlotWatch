@@ -18,6 +18,7 @@ public static class PaissaHousingSorting
             8 => Order(rows, row => row.Plot.LottoEntries, ascending),
             9 => Order(rows, row => PaissaHousingPolicy.GetDisplayedPhaseDeadline(row.Plot, asOfUtc), ascending),
             10 => Order(rows, row => PaissaApiParser.UnixSecondsToUtc(row.Plot.LastUpdatedTime), ascending),
+            11 => Order(rows, row => ReportedStatusKey(row.Plot), ascending),
             _ => Order(rows, row => row.Snapshot.World.Name, ascending),
         };
         return ordered.ThenBy(row => row.Snapshot.World.Name, StringComparer.Ordinal)
@@ -31,6 +32,12 @@ public static class PaissaHousingSorting
     {
         var phase = PaissaHousingPolicy.GetPhaseFilter(plot, asOfUtc);
         return phase == PaissaPhaseFilter.Unknown ? null : phase;
+    }
+
+    private static PaissaStatusFilter? ReportedStatusKey(PaissaPlotListing plot)
+    {
+        var status = PaissaHousingPolicy.GetReportedStatusFilter(plot.LottoPhase);
+        return status == PaissaStatusFilter.Unknown ? null : status;
     }
 
     private static IOrderedEnumerable<(PaissaHousingWorldData Snapshot, PaissaPlotListing Plot)> Order<TKey>(

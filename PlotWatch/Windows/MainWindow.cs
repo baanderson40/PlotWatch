@@ -7,6 +7,7 @@ using PlotWatch.Data;
 using PlotWatch.Diagnostics;
 using PlotWatch.Lottery;
 using PlotWatch.Paissa;
+using PlotWatch.Travel;
 
 namespace PlotWatch.Windows;
 
@@ -37,6 +38,8 @@ public sealed partial class MainWindow : Window
     private readonly HashSet<int?> selectedSizes = [];
     private readonly HashSet<PaissaEligibilityFilter> selectedEligibility = [];
     private readonly HashSet<PaissaPhaseFilter> selectedPhases = [];
+    private readonly HashSet<PaissaStatusFilter> selectedStatuses = [];
+    private bool includeOutdatedReports;
     private bool initializedPlotFilters;
     private int tableSortColumn;
     private bool tableSortAscending = true;
@@ -58,11 +61,17 @@ public sealed partial class MainWindow : Window
         Action fetchHousingWorlds,
         Action refreshHousingWorlds,
         Action cancelHousingRequest,
-        BidTracker bidTracker)
+        BidTracker bidTracker,
+        PlotTravel plotTravel,
+        Action<PlotDestination> requestTravel,
+        Action stopTravel)
         : base("PlotWatch")
     {
         this.configuration = configuration;
         this.bidTracker = bidTracker;
+        this.plotTravel = plotTravel;
+        this.requestTravel = requestTravel;
+        this.stopTravel = stopTravel;
         this.diagnostics = diagnostics;
         this.saveConfiguration = saveConfiguration;
         this.resetConfirmation = resetConfirmation;
@@ -77,6 +86,8 @@ public sealed partial class MainWindow : Window
         if ((configuration.HousingSizeMask & 4) != 0) selectedSizes.Add(2);
         AddMasked(selectedEligibility, configuration.HousingEligibilityMask);
         AddMasked(selectedPhases, configuration.HousingPhaseMask);
+        AddMasked(selectedStatuses, configuration.HousingStatusMask);
+        includeOutdatedReports = configuration.HousingIncludeOutdatedReports;
         initializedPlotFilters = true;
         TitleBarButtons.Add(new TitleBarButton
         {
@@ -95,6 +106,7 @@ public sealed partial class MainWindow : Window
         ImGui.SetWindowFontScale(configuration.TextScalePercent / 100f);
         try
         {
+            DrawTravelStatus();
             if (ImGui.BeginTabBar("##plotwatch-tabs"))
             {
                 DrawTab(PlotWatchTab.Dashboard, "Dashboard", DrawDashboard);
@@ -315,6 +327,7 @@ public sealed partial class MainWindow : Window
                 DrawSizeFilters();
                 DrawEligibilityFilters();
                 DrawPhaseFilters();
+                DrawReportedStatusFilters();
                 if (ImGui.Button("Reset Filters"))
                     ResetHousingFilters();
             }
@@ -326,6 +339,7 @@ public sealed partial class MainWindow : Window
         ImGui.SameLine();
         if (ImGui.BeginChild("##housing-results", new Vector2(0, 0), false))
         {
+            ImGui.TextDisabled("Right-click a plot number for Travel to plot (Lifestream).");
             DrawHousingResults();
         }
         ImGui.EndChild();
@@ -438,7 +452,7 @@ public sealed partial class MainWindow : Window
 
     private void DrawPhaseFilters()
     {
-        if (!ImGui.CollapsingHeader("Phase", ImGuiTreeNodeFlags.DefaultOpen))
+        if (!ImGui.CollapsingHeader("Period", ImGuiTreeNodeFlags.DefaultOpen))
             return;
         DrawPhaseCheckbox("Entry", PaissaPhaseFilter.Entry);
         DrawPhaseCheckbox("Results", PaissaPhaseFilter.Results);
@@ -453,6 +467,25 @@ public sealed partial class MainWindow : Window
             if (selected) selectedPhases.Add(option);
             else selectedPhases.Remove(option);
         }
+    }
+
+    private void DrawReportedStatusFilters()
+    {
+        if (!ImGui.CollapsingHeader("Reported status", ImGuiTreeNodeFlags.DefaultOpen)) return;
+        foreach (var (label, option) in new[]
+        {
+            ("Accepting entries", PaissaStatusFilter.AcceptingEntries),
+            ("Results##reported", PaissaStatusFilter.Results),
+            ("Bidding unavailable", PaissaStatusFilter.Unavailable),
+            ("Not reported / Unrecognized", PaissaStatusFilter.Unknown),
+        })
+        {
+            var selected = selectedStatuses.Contains(option);
+            if (!ImGui.Checkbox(label, ref selected)) continue;
+            if (selected) selectedStatuses.Add(option);
+            else selectedStatuses.Remove(option);
+        }
+        ImGui.Checkbox("Include outdated reports", ref includeOutdatedReports);
     }
 
     private static void DrawNullableIntCheckbox(string label, int? value, HashSet<int?> set)
@@ -536,6 +569,9 @@ public sealed partial class MainWindow : Window
             PaissaPhaseFilter.Entry, PaissaPhaseFilter.Results,
             PaissaPhaseFilter.Unknown,
         ]);
+        selectedStatuses.Clear();
+        selectedStatuses.UnionWith(Enum.GetValues<PaissaStatusFilter>());
+        includeOutdatedReports = true;
     }
 
     private static void AddMasked<T>(HashSet<T> values, int mask) where T : struct, Enum
@@ -556,11 +592,14 @@ public sealed partial class MainWindow : Window
             | (selectedSizes.Contains(null) ? 8 : 0);
         var eligibilityMask = Mask(selectedEligibility);
         var phaseMask = Mask(selectedPhases);
+        var statusMask = Mask(selectedStatuses);
         var changed = !configuration.HousingWorldIds.SequenceEqual(worldIds)
             || !configuration.HousingDistrictIds.SequenceEqual(districtIds)
             || configuration.HousingSizeMask != sizeMask
             || configuration.HousingEligibilityMask != eligibilityMask
-            || configuration.HousingPhaseMask != phaseMask;
+            || configuration.HousingPhaseMask != phaseMask
+            || configuration.HousingStatusMask != statusMask
+            || configuration.HousingIncludeOutdatedReports != includeOutdatedReports;
         if (!changed)
             return;
         configuration.HousingWorldIds = worldIds;
@@ -568,6 +607,8 @@ public sealed partial class MainWindow : Window
         configuration.HousingSizeMask = sizeMask;
         configuration.HousingEligibilityMask = eligibilityMask;
         configuration.HousingPhaseMask = phaseMask;
+        configuration.HousingStatusMask = statusMask;
+        configuration.HousingIncludeOutdatedReports = includeOutdatedReports;
         saveConfiguration();
     }
 
@@ -627,7 +668,9 @@ public sealed partial class MainWindow : Window
             selectedDistrictIds,
             selectedSizes,
             selectedEligibility,
-            selectedPhases);
+            selectedPhases,
+            selectedStatuses,
+            includeOutdatedReports);
         var rows = snapshots.SelectMany(snapshot => snapshot.Listings.Select(plot => (Snapshot: snapshot, Plot: plot)))
             .Where(row => PaissaHousingPolicy.Matches(row.Plot, filters, asOfUtc))
             .ToList();
@@ -637,7 +680,7 @@ public sealed partial class MainWindow : Window
             ImGuiTableFlags.Sortable | ImGuiTableFlags.ScrollY | ImGuiTableFlags.ScrollX;
         var footerHeight = ImGui.GetFrameHeight() + ImGui.GetStyle().ItemSpacing.Y;
         var tableHeight = Math.Max(1f, ImGui.GetContentRegionAvail().Y - footerHeight);
-        if (!ImGui.BeginTable("##paissa-housing-listings", 11, tableFlags, new Vector2(0, tableHeight)))
+        if (!ImGui.BeginTable("##paissa-housing-listings", 12, tableFlags, new Vector2(0, tableHeight)))
             return;
 
         ImGui.TableSetupScrollFreeze(0, 1);
@@ -648,9 +691,10 @@ public sealed partial class MainWindow : Window
         ImGui.TableSetupColumn("Size", ImGuiTableColumnFlags.None, 0, 4);
         ImGui.TableSetupColumn("Price", ImGuiTableColumnFlags.None, 0, 5);
         ImGui.TableSetupColumn("Eligibility", ImGuiTableColumnFlags.None, 0, 6);
-        ImGui.TableSetupColumn("Phase", ImGuiTableColumnFlags.None, 0, 7);
+        ImGui.TableSetupColumn("Period", ImGuiTableColumnFlags.None, 0, 7);
+        ImGui.TableSetupColumn("Reported status", ImGuiTableColumnFlags.None, 0, 11);
         ImGui.TableSetupColumn("Entries", ImGuiTableColumnFlags.None, 0, 8);
-        ImGui.TableSetupColumn("Closes", ImGuiTableColumnFlags.None, 0, 9);
+        ImGui.TableSetupColumn("Period ends", ImGuiTableColumnFlags.None, 0, 9);
         ImGui.TableSetupColumn("Last observed", ImGuiTableColumnFlags.None, 0, 10);
         ImGui.TableHeadersRow();
 
@@ -674,6 +718,12 @@ public sealed partial class MainWindow : Window
             ImGui.TableNextColumn(); ImGui.TextUnformatted(plot.DistrictName);
             ImGui.TableNextColumn(); ImGui.TextUnformatted(plot.WardNumber?.ToString() ?? "Unknown");
             ImGui.TableNextColumn(); ImGui.TextUnformatted(plot.PlotNumber?.ToString() ?? "Unknown");
+            if (ImGui.BeginPopupContextItem($"travel-{plot.WorldId}-{plot.DistrictId}-{plot.WardNumber}-{plot.PlotNumber}"))
+            {
+                DrawTravelAction(new PlotDestination(snapshot.World.Id, snapshot.World.Name,
+                    plot.DistrictId, plot.WardNumber, plot.PlotNumber));
+                ImGui.EndPopup();
+            }
             ImGui.TableNextColumn(); ImGui.TextUnformatted(FormatHousingSize(plot.Size));
             ImGui.TableNextColumn(); ImGui.TextUnformatted(plot.Price?.ToString("N0") ?? "Unknown");
             ImGui.TableNextColumn(); ImGui.TextUnformatted(PaissaHousingPolicy.DescribeEligibility(plot.PurchaseSystem));
@@ -692,8 +742,23 @@ public sealed partial class MainWindow : Window
                 ImGui.BeginTooltip();
                 ImGui.TextWrapped(PaissaHousingPolicy.GetPhaseExplanation(plot, asOfUtc));
                 ImGui.TextUnformatted($"Raw PaissaDB deadline: {FormatDeadline(PaissaApiParser.UnixSecondsToUtc(plot.LottoPhaseUntil))}");
-                ImGui.TextUnformatted($"Global phase closes: {FormatDeadline(displayedDeadline)}");
+                ImGui.TextUnformatted($"Global period ends: {FormatDeadline(displayedDeadline)}");
                 ImGui.TextUnformatted($"Source freshness: {freshness}");
+                ImGui.EndTooltip();
+            }
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(PaissaHousingPolicy.GetReportedStatusLabel(plot.LottoPhase, plot.LottoPhaseUntil, asOfUtc));
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.BeginTooltip();
+                ImGui.TextWrapped(PaissaHousingPolicy.GetReportedStatusExplanation(plot.LottoPhase, plot.LottoPhaseUntil, asOfUtc));
+                if (PaissaHousingPolicy.GetReportedStatusTiming(plot.LottoPhase, plot.LottoPhaseUntil, asOfUtc) == PaissaReportTiming.Outdated)
+                    ImGui.TextWrapped(PaissaHousingPolicy.GetStatusRefreshGuidance(asOfUtc, refreshCooldownUntilUtc, housingRequestPending));
+                ImGui.TextUnformatted($"Raw API phase: {plot.LottoPhase?.ToString() ?? "Not reported"}");
+                ImGui.TextUnformatted($"Raw status deadline: {FormatDeadline(PaissaApiParser.UnixSecondsToUtc(plot.LottoPhaseUntil))}");
+                ImGui.TextUnformatted($"Raw deadline Unix seconds: {plot.LottoPhaseUntil?.ToString() ?? "Not reported"}");
+                ImGui.TextUnformatted($"Source observed: {FormatUnixSourceTime(plot.LastUpdatedTime)}");
+                ImGui.TextUnformatted($"Downloaded: {FormatTimestampForDisplay(snapshot.DownloadedAtUtc, includeSeconds: true)}");
                 ImGui.EndTooltip();
             }
             ImGui.TableNextColumn(); ImGui.TextUnformatted(plot.LottoEntries?.ToString() ?? "Not reported");
@@ -706,6 +771,7 @@ public sealed partial class MainWindow : Window
             {
                 ImGui.BeginTooltip();
                 ImGui.TextUnformatted(PaissaHousingPolicy.GetClosureCountdown(plot, asOfUtc));
+                ImGui.TextWrapped("Calculated global period end, not a verified bidding deadline for this plot. See Reported status.");
                 ImGui.EndTooltip();
             }
             ImGui.TableNextColumn(); ImGui.TextUnformatted(FormatUnixSourceTime(plot.LastUpdatedTime));

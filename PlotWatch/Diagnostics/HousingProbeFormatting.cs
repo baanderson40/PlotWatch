@@ -10,6 +10,16 @@ public static class HousingProbeFormatting
     public const int MaximumDepth = 8;
     public const int PartBodyLength = 2400;
 
+    public static string? DescribePlacardAddress(string text, IReadOnlyList<HousingProbeTemplate> templates)
+    {
+        if (!templates.Any(template => template.Sheet == "Addon" && template.Row == 8847 && IsCompleteAddress(text, template.Macro)))
+            return null;
+        var numbers = Regex.Matches(text, @"\d+", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50))
+            .Take(8).Select(match => match.Length <= 9 ? match.Value : "[long-number-redacted]");
+        return $"category=placard-address; complete-rendered-address-shape=True; numeric-text-tokens=[{string.Join(",", numbers)}]; " +
+            "shared-format-reference=Addon/8847, NOT evidence that the Timers template was invoked; raw address text withheld";
+    }
+
     /// <summary>Lossless bounded parts, so a large snapshot cannot hide late-index evidence.</summary>
     public static IReadOnlyList<string> SnapshotParts(string header, IEnumerable<string> details)
     {

@@ -33,6 +33,7 @@ public sealed class DebugWindow : Window
     private readonly Action<HousingProbeOptions> armHousingProbe;
     private bool probeAllLogIds;
     private bool probeAddonNames = true;
+    private bool probeNativeSuccess;
     private int probeNumericId;
 
     public DebugWindow(Configuration configuration, PluginDiagnostics diagnostics, Action<DiagnosticAction> enqueueAction,
@@ -145,18 +146,20 @@ public sealed class DebugWindow : Window
     private void DrawHousingCapture()
     {
         var view = housingProbe.View;
-        ImGui.TextWrapped("Probe only: no bids are created, edited, or deleted; no game actions or native hooks. Stop/expiry invalidates observation context. Templates do not reveal live lnum values.");
+        ImGui.TextWrapped("Probe only: no bids are created, edited, or deleted; no game actions. Optional native success probe installs a version/hash-gated hook only while armed. Stop/expiry invalidates observation context.");
         ImGui.TextUnformatted($"{view.Status} Remaining: {view.Remaining.TotalSeconds:F1}s");
         ImGui.TextUnformatted($"Character available: {view.Context.CharacterAvailable}; home world: {view.Context.HomeWorld}; current world: {view.Context.CurrentWorld}");
         ImGui.TextUnformatted($"Territory: {view.Context.Territory}; client language: {view.Context.Language}");
+        ImGui.TextWrapped($"Native success probe: {view.NativeProbeStatus}");
         ImGui.BeginDisabled(view.Armed);
         ImGui.Checkbox("All LogMessage IDs (metadata only, while armed)", ref probeAllLogIds);
         ImGui.Checkbox("Discover addon lifecycle names (names only)", ref probeAddonNames);
+        ImGui.Checkbox("Native successful-entry probe (experimental, exact game build only)", ref probeNativeSuccess);
         ImGui.SetNextItemWidth(180);
         ImGui.InputInt("Numeric parameters for selected LogMessage ID (0 = off)", ref probeNumericId);
         if (probeNumericId < 0) probeNumericId = 0;
         if (ImGui.Button("Arm 15-second probe"))
-            armHousingProbe(new(probeAllLogIds, probeNumericId > 0 ? (uint)probeNumericId : null, probeAddonNames));
+            armHousingProbe(new(probeAllLogIds, probeNumericId > 0 ? (uint)probeNumericId : null, probeAddonNames, probeNativeSuccess));
         ImGui.EndDisabled();
         ImGui.SameLine();
         if (ImGui.Button("Stop")) enqueueAction(DiagnosticAction.StopHousingProbe);
@@ -168,6 +171,7 @@ public sealed class DebugWindow : Window
         ImGui.SameLine();
         if (ImGui.Button("Copy events only")) ImGui.SetClipboardText(housingProbe.BuildReport(diagnostics.BuildId, includeTemplates: false));
         ImGui.TextWrapped("LogMessage IDs belong to the LogMessage sheet, NOT Addon/custom row IDs. All-ID tracing withholds argument values; numeric inspection requires a selected LogMessage ID. Strings, entities, Content IDs, 64-bit values and pointers are withheld. System chat/template matches are candidates only, not native identity proof.");
+        ImGui.TextWrapped("Native mode observes only an exact localized successful-entry template at the SystemTalk formatting queue. Typed int32 arguments are copied without formatting or replaying messages. No native sheet/row identity is claimed; argument mapping still needs live verification. Purchase type remains unverified.");
 
         if (ImGui.CollapsingHeader($"Sheet templates ({view.Templates.Count})"))
         {
@@ -187,7 +191,7 @@ public sealed class DebugWindow : Window
             ImGui.BulletText("C: arm; view known placard, close it, view a different plot; cancel claim/refund prompts.");
             ImGui.BulletText("D: unrelated UI, expiry, logout/character switch; verify context is invalidated.");
             ImGui.BulletText("E/F: wait for Entry; observe a real intended bid and its status. Verify Personal/FC separately.");
-            ImGui.TextWrapped("Do not spend gil just to test. If no standard event exposes custom-sheet identity/parameters, diagnostics are inconclusive; a separate native-probe decision is required.");
+            ImGui.TextWrapped("Do not spend gil just to test. First arm native mode and open/cancel a placard: no NativeSuccess event expected. Only for a bid already intended: arm immediately before final confirmation, then compare copied ticket/address/deadline with game and Timers. Unsupported build means no native hook; never bypass the gate.");
         }
         ImGui.Separator();
         ImGui.TextUnformatted($"Events: {view.Entries.Count}/{HousingProbeState.Capacity}; oldest dropped: {view.Dropped}");
@@ -342,7 +346,13 @@ public sealed class DebugWindow : Window
                     : "Address unknown";
                 var globalPhase = lotterySnapshot is { } schedule ? PaissaHousingPolicy.GetPhaseLabel(plot.PurchaseSystem, schedule.NowUtc) : "Waiting for schedule";
                 var globalClose = lotterySnapshot is { } clock ? PaissaHousingPolicy.GetDisplayedPhaseDeadline(plot.PurchaseSystem, clock.NowUtc)?.ToString("O") ?? "Unknown" : "Unknown";
-                ImGui.BulletText($"{address}; size={FormatSize(plot.Size)}; price={plot.Price?.ToString("N0") ?? "Unknown"}; type={PaissaApiParser.DescribePurchaseSystem(plot.PurchaseSystem)}; PW global phase={globalPhase}; global close={globalClose}; raw API phase={PaissaApiParser.DescribeLotteryPhase(plot.LottoPhase)}; entrants={plot.LottoEntries?.ToString() ?? "Unknown"}; raw API deadline={FormatUnix(plot.LottoPhaseUntil)}; last observed={FormatUnix(plot.LastUpdatedTime)}");
+                var reported = lotterySnapshot is { } statusClock
+                    ? PaissaHousingPolicy.GetReportedStatusLabel(plot.LottoPhase, plot.LottoPhaseUntil, statusClock.NowUtc)
+                    : PaissaHousingPolicy.GetReportedStatusLabel(plot.LottoPhase);
+                var timing = lotterySnapshot is { } timingClock
+                    ? PaissaHousingPolicy.GetReportedStatusTiming(plot.LottoPhase, plot.LottoPhaseUntil, timingClock.NowUtc).ToString()
+                    : "Waiting for schedule";
+                ImGui.BulletText($"{address}; size={FormatSize(plot.Size)}; price={plot.Price?.ToString("N0") ?? "Unknown"}; type={PaissaApiParser.DescribePurchaseSystem(plot.PurchaseSystem)}; global period={globalPhase}; period end={globalClose}; reported status={reported}; report timing={timing}; raw API phase={plot.LottoPhase?.ToString() ?? "Not reported"} ({PaissaApiParser.DescribeLotteryPhase(plot.LottoPhase)}); entrants={plot.LottoEntries?.ToString() ?? "Not reported"}; raw API deadline={FormatUnix(plot.LottoPhaseUntil)} (raw {plot.LottoPhaseUntil?.ToString() ?? "Not reported"}); last observed={FormatUnix(plot.LastUpdatedTime)}; downloaded={diagnostics.PaissaInspectionLastSuccessUtc?.ToString("O") ?? "Unknown"}");
             }
         }
 

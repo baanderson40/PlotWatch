@@ -22,7 +22,10 @@
         <Compile Include="..\PlotWatch\Diagnostics\PluginDiagnostics.cs" Link="Production\PluginDiagnostics.cs" />
         <Compile Include="..\PlotWatch\Diagnostics\HousingProbeState.cs" Link="Production\HousingProbeState.cs" />
         <Compile Include="..\PlotWatch\Diagnostics\HousingProbeFormatting.cs" Link="Production\HousingProbeFormatting.cs" />
+        <Compile Include="..\PlotWatch\Diagnostics\HousingPlacardEvidence.cs" Link="Production\HousingPlacardEvidence.cs" />
+        <Compile Include="..\PlotWatch\Diagnostics\HousingNativeEvidence.cs" Link="Production\HousingNativeEvidence.cs" />
         <Compile Include="..\PlotWatch\Lottery\LotterySchedule.cs" Link="Production\LotterySchedule.cs" />
+        <Compile Include="..\PlotWatch\Travel\PlotTravel.cs" Link="Production\PlotTravel.cs" />
         <Compile Include="..\PlotWatch\Paissa\PaissaApiParser.cs" Link="Production\PaissaApiParser.cs" />
         <Compile Include="..\PlotWatch\Paissa\PaissaApiClient.cs" Link="Production\PaissaApiClient.cs" />
         <Compile Include="..\PlotWatch\Paissa\PaissaHousingPolicy.cs" Link="Production\PaissaHousingPolicy.cs" />

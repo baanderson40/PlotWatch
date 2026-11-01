@@ -4,7 +4,7 @@ Dalamud plugin for FFXIV housing lottery tracking, available-plot discovery, ale
 
 Commands: `/plotwatch` and `/pw`.
 
-> **Status:** Phases 1–2 implemented; Phase 3 multi-world PaissaDB browser and hardening implemented. Phase 4 character management/manual bid records implemented; user validated manual add/edit and reload persistence, with remaining acceptance checks pending. Release build and offline verification results are recorded separately from in-game acceptance. Phase 2 schedule/dashboard and Phase 3 hardening validated in-game. Phase 5 read-only capture diagnostics implemented; automatic capture is not implemented. Alerts and optional travel remain pending. Sweep automation and local housing capture are out of scope.
+> **Status:** Phases 1–2 implemented; Phase 3 multi-world PaissaDB browser and hardening implemented. Phase 4 character management/manual bid records implemented; user validated manual add/edit and reload persistence, with remaining acceptance checks pending. Release build and offline verification results are recorded separately from in-game acceptance. Phase 2 schedule/dashboard and Phase 3 hardening validated in-game. Phase 5 read-only capture diagnostics implemented; automatic capture is not implemented. Optional Lifestream travel implemented; live acceptance pending. Alerts remain pending. Sweep automation and local housing capture are out of scope.
 
 ## Product specification
 
@@ -52,9 +52,9 @@ Commands: `/plotwatch` and `/pw`.
 - Never present API failure or missing fields as “no houses”; show unavailable/stale state and retain last successful data with its timestamp.
 - PaissaDB API is the sole source for housing listings. Persist a replaceable last-successful API snapshot cache for startup continuity, not a historical/local housing inventory. Do not capture ward data.
 
-### Travel actions (tentative)
+### Travel actions
 
-- Optional, user-triggered Lifestream travel from available-house and bid rows to a selected ward/plot may be explored later.
+- Optional, user-triggered Lifestream travel from available-house and bid rows to a selected ward/plot is implemented; live acceptance remains pending.
 - No automatic ward selection, review-tab cycling, sweep, local ward-data capture, bidding, claiming, or refund collection.
 - Treat travel as a separate integration feature; keep core API browsing and bid tracking usable when Lifestream is absent.
 - Validate Lifestream IPC, readiness/busy/error signals, cancellation, and destination parsing before implementation. Do not assume undocumented contracts.
@@ -62,7 +62,7 @@ Commands: `/plotwatch` and `/pw`.
 ### Notifications and travel actions
 
 - Chat and toast notifications are configurable; optional sound is off by default.
-- Optional, user-triggered Lifestream travel actions from bid rows and available-house listings remain tentative.
+- Optional, user-triggered Lifestream travel actions from bid rows and available-house listings are implemented; live acceptance remains pending.
 - Hide or disable integration actions when the relevant plugin is missing or busy. Never make optional integrations a requirement for core tracking.
 
 ### Main UI
@@ -139,9 +139,13 @@ Commands: `/plotwatch` and `/pw`.
 - Read-only API diagnostics, typed parsing, one-based display addresses, retained last-successful snapshots, paced/cancellable refreshes, and failure/partial-response protection.
 - Multi-world selection with home-world, data-center, all, and clear shortcuts; saved district/size/eligibility/phase filters and sortable results.
 - Recognized lottery purchase flags (1, 3, 5, 7) use the global schedule for Entry/Results and the active phase deadline, regardless of missing, expired, or Closed API reports. This supersedes the earlier per-plot Entry-to-Results inference.
-- Recognized non-lottery flags (0, 2, 4, 6) show Not applicable; missing/unrecognized flags show Unknown, with no closing time. Filters are Entry, Results, and Unknown / Not applicable. Original API phase/deadline remain unchanged in cache and available in tooltips/diagnostics.
+- Recognized non-lottery flags (0, 2, 4, 6) show Not applicable; missing/unrecognized flags show Unknown, with no period end. Period filters are Entry, Results, and Unknown / Not applicable. Original API phase/deadline remain unchanged in cache and available in tooltips/diagnostics.
 - Configuration version 9 migrates legacy phase selections once: Entry/Results preserved, Unavailable mapped to both, Unknown preserved. New/default/reset masks select all three categories.
 - Last observed replaces Updated. Ward sweeps can refresh vacancy observations without refreshing lottery details; global phase never guarantees continued vacancy. Entrants remain reported values or Unknown, never fabricated zero or reset on rollover.
+- Global Period is distinct from PaissaDB Reported status: null/missing → Not reported, 1 → Accepting entries, 2 → Results, 3 → Unavailable, other → Unrecognized. Global Entry never substitutes for missing purchase status. Entrant nulls display Not reported independently; zero remains zero.
+- Report deadlines at or before the shared schedule time mark the reported status Outdated; no inferred replacement status. Missing/invalid deadlines retain status with timing unverified in tooltip. Future deadlines mean not expired, not proof of recent lottery observation. Missing status stays Not reported even if a raw deadline exists.
+- Browser columns: Period, Reported status, Entries, Period ends, Last observed. Period ends/countdown remain global calculations, explicitly not verified bidding deadlines for an individual plot. Status tooltip retains raw phase/deadline (including Unix seconds), source observation/download time, and sweep-freshness caveat. Column IDs 0–10 retain existing meaning; reported-status sort uses new ID 11 with missing/unrecognized statuses last in both directions.
+- Configuration version 10 adds independent status-filter bits 1/2/4/8 (Accepting entries/Results/Unavailable/Not reported or Unrecognized) and Include outdated reports. Migration enables all new status choices/outdated reports once, preserving existing period/world/district/size/eligibility/time preferences. Reload preserves choices, including empty selection; Reset Filters/default reset restore all status choices. Both period and status filters must match.
 - Source freshness is separate: observations two or more phases old are Stale; invalid/missing timestamps have Unknown freshness. Cache download age is not source age.
 - Effective Closes sorting and live countdowns use the same cached schedule time as phase interpretation. Unknown deadlines/counts sort last in either direction.
 - Character changes select the new character’s home world, including same-world alts. Same-character manual choices survive framework updates and reloads. Selection works before directory download and saves once per character transition.
@@ -155,6 +159,8 @@ Commands: `/plotwatch` and `/pw`.
 - Offline tests do not validate ImGui rendering, native character-state reads, or live Dalamud lifecycle behavior.
 - Global-phase verification on 2026-11-01: Release build passed with zero warnings/errors; 97/97 offline tests passed. Coverage includes all recognized purchase flags, missing/unrecognized flags, raw Closed/null phases, exact boundaries/rollover, deadline/countdown/sorting consistency, unchanged reports/counts, and idempotent filter migration. Main/debug windows consume the shared cached schedule snapshot.
 - Pending in-game global-phase acceptance: Midgardsormr → Mist → Ward 5 Plot 11 should show Entry, closing 2026-11-06 15:00 UTC (or local equivalent), and Unknown entrants without opening its placard. Check filter migration, Phase/Closes sorting, tooltips, and UTC/local display.
+- 2026-11-01 reported-status patch supersedes that acceptance wording: latest Midgardsormr Mist W5 P11 reports Entry / Accepting entries / 0 entrants; its earlier null payload should show Entry / Not reported / Not reported entrants. Faerie Goblet W25 P54 reports Entry / Unavailable / 0 entrants, global period end Nov 6 15:00 UTC, raw report deadline Nov 10 15:00 UTC. User's placard log agrees with unavailable status; global Entry must not override it. Live table/filter/migration acceptance remains pending.
+- Reported-status patch verification: Release build passed with zero warnings/errors; 123/123 offline tests passed. Tests cover classifications, global/API disagreements, null/zero preservation and unchanged reports, exact expiry/offset boundaries, missing/invalid deadlines, combined filters, stable sort IDs/unknown-last ordering, v7–v9 migration to v10, reload/idempotence/reset. API fetching/uploads/cache payloads and native bid probes are unchanged by this patch.
 
 **Deliverables**
 
@@ -224,7 +230,7 @@ Commands: `/plotwatch` and `/pw`.
 
 ### Phase 5 — Passive bid capture and results
 
-**Status:** Source and installed-game sheet investigation completed through 2026-10-30. Read-only Housing Capture debug probe implemented; automatic capture is not implemented. Prefer structured message identity/parameters over HLT's English text regexes, if housing's runtime message path exposes them. Latest verification: Release build and 95/95 offline tests pass. User reports validate loading 35 templates and expanded Timers/placard coverage; latest combined-message/SeString decoding fixes need live retesting.
+**Status:** Source and installed-game investigation, read-only Housing Capture diagnostics, and explicitly opt-in native success probe implemented; automatic capture is not implemented. Latest verification: Release build and 118/118 offline tests pass. User reports validate templates, Timers, and rendered placard count/deadline gap patch. Native probe compatibility/negative controls and actual successful-entry mapping require live verification.
 
 #### User decisions and investigation boundaries
 
@@ -354,7 +360,7 @@ Verified in knowledge-base Dalamud/ClientStructs source:
 
 - Debug window → **Housing Capture** has Inspect sheet templates, Arm 15-second probe, Stop, Clear results, and Copy diagnostic report. Probe options are session-only and do not change configuration/bid data. Run all checks does not implicitly arm it.
 - `Diagnostics/HousingProbeState.cs` owns monotonic expiry, character-bound invalidation, immutable view snapshots, candidate-only correlation, report generation, and a 200-entry history. Verbose event output is limited to 400 events per probe; the stop/expiry entry reports rate-limit suppression. Clear stops the probe and clears history while retaining inspected templates.
-- `Diagnostics/HousingCaptureDiagnostics.cs` subscribes to standard ChatMessage/LogMessage and addon PostSetup/PreFinalize lifecycle events. Disposal unsubscribes. No native hooks, SeString evaluation, game callbacks, chat suppression, actions, or bid-store access are introduced.
+- Default `Diagnostics/HousingCaptureDiagnostics.cs` observation uses standard ChatMessage/LogMessage and addon PostSetup/PreFinalize events. Disposal unsubscribes. Native probing is a separately opted-in extension described below. No SeString evaluation, game callbacks, chat suppression, actions, or bid-store access is introduced.
 - All sheet/native reads occur on the framework thread. Templates use the current client's sheet language without English fallback; raw macros, nested literal-branch prefixes, payload structure, and local-number references are reported. Local references are NOT assumed to be zero-based event indexes.
 - Current character availability, home/current world IDs, territory, and language are sampled outside rendering. Private character identity only invalidates the probe and is never exported. Logout/character switch stops probing, including same-world alts; territory/world changes invalidate cached addon snapshots.
 - Default LogMessage observation is metadata-only for the previously located housing-related LogMessage rows 3497/6099. **All LogMessage IDs** opt-in records arbitrary IDs/counts with values withheld; it does not identify them as housing events. To inspect numeric arguments for a discovered LogMessage ID, enter that ID and re-arm. Only up to 32 integer arguments are exposed for that explicitly selected ID; strings/entities/addresses remain withheld. Never enter custom-sheet row 6 merely because successful entry uses that row.
@@ -390,6 +396,10 @@ Verified in knowledge-base Dalamud/ClientStructs source:
 - User clarified they have no placed bid and cannot bid during the current Results period. Screenshot of Mist Ward 20 Plot 26 showed Small, available to both FC and Personal, currently unavailable for purchase, and no displayed deadline. Therefore missing bid/ticket/deadline evidence in these runs is not a failed successful-entry capture test; that test awaits Entry and a real intended bid.
 - Screenshot exposed two further probe issues: whole-node start matching omitted later messages in a combined eligibility/status block, and text nodes used UTF-8 ToString rather than decoding SeString payloads. AtkValue strings already used SeString extraction.
 - Patch: both node and AtkValue strings now use the same bounded ReadOnlySeString.ExtractText path. Only complete payload-free localized sheet messages from Addon 7040/7041/7043 may match within a combined block, with boundary checks. Static message extraction does not evaluate templates or obtain live lnums. Address matching remains full-structure; chat/outcome matching is not broadened.
+- 2026-11-01 live Entry-period checks: Timers without a placed bid exposed Addon/8843 and 8844 text candidates, but no current-entry details. Mist W5 P11 placard screenshot confirmed FC-only, 0 participants, and displayed close 8:59 a.m. 11/6/2026. Prior probe found eligibility but did not separately identify dynamic count/deadline within the combined text node.
+- Gap patch: only HousingSignBoard snapshots use localized Addon/7040/7041/7043/7044 template-shaped recognition to export bounded eligibility, purchase-status/count, and displayed-deadline segments. Supported numeric/time/conditional macros generate allowlisted patterns; unsupported macros and incomplete fields fail closed. Unmatched arbitrary text remains withheld. Values are rendered observations, never native identity/local parameters or a placed-bid event. Displayed 8:59 remains 8:59; no date-order inference or Unix-time conversion. Global calculated phase/UTC close is logged separately.
+- Placard addresses have their own evidence category. Shared Addon/8847 address wording is a format reference only, not evidence that the Timers template was invoked. Full address validation remains required.
+- Gap-patch verification: Release build clean; 110/110 tests pass, including combined zero-count screenshot fixture, both eligibility types, Results/unavailable/first-come statuses, localized shapes/multiline input, incomplete/unsupported macros, privacy, and address categorization. Live retest: re-arm probe, open Mist W5 P11, and export events-only report. No bid/cache/API writes or game actions added.
 - Added regressions using the screenshot's FC + Personal + unavailable text, single-line/multiline variants, incomplete/embedded-word rejection, and scope checks preventing inline chat/outcome expansion. These test pure matching policy, not live native text decoding. Repeat the placard probe after reload and send Copy events only.
 
 **A — Read-only evidence probe (first)**
@@ -399,6 +409,21 @@ Verified in knowledge-base Dalamud/ClientStructs source:
 - Verify local-number indexing, ward/plot numbering, results-time value/unit, sender/event provenance, character/world context, and actual type evidence while Entry is open.
 - Inspect status/placard context already available during Results without fabricating a successful-entry event or spending gil only to test capture.
 - No automatic record writes during probing. If the localized path is unavailable, ask before adopting an English-text fallback or a more invasive native hook.
+
+**Native diagnostic patch — implemented 2026-11-01, live verification pending**
+
+- Read-only disassembly of the installed `ffxiv_dx11.exe` established a narrower pre-formatting queue boundary, avoiding speculative hooks on several global text formatters. Runtime code uses no absolute addresses.
+- Reproducible static trace for installed version `2026.10.16.0000.0000`: the Lua binding for string `SystemTalk` points to wrapper VA `0x1417DE640`; wrapper dispatches scene implementation vtable slot 23. EventSceneModule constructor establishes the usual implementation vtable at `0x1422DA900`; slot 23 targets `0x1417A4860`. That routine resolves the template, collects Lua arguments 4..N into a TextParameter deque, and calls `EventFramework.QueueFormatStringCallback` at `0x140B874B0`. These are disassembly references only, not runtime offsets.
+- Collector at `0x1417CE1A0` appends numeric arguments as type 0, int32 at offset 0, and self-value pointer at offset 8. Queue receives `(EventFramework*, Utf8String*, StdDeque<TextParameter>*, callback*, ulong)` and copies the unformatted template/parameters into its deferred queue. Runtime indexing and success-scene context remain candidate interpretations until live capture confirms them.
+- `HousingNativeProbe.cs` uses the unique 25-byte queue prologue signature, exact executable SHA-256 `46a52ab1dbe80b9a8d6c4d4531bf66693904200c5135facacd053ef28a5de14a`, version and ClientStructs layout checks, plus a live prologue comparison before hook creation. Unknown build/layout, missing template/signature, or pre-existing prologue patch leaves the probe unavailable rather than guessing. No hard-coded VA or fallback formatter hooks.
+- New Housing Capture checkbox: **Native successful-entry probe (experimental, exact game build only)**. Off by default and not persisted. Arm enables it only for the shared monotonic 15-second probe window. Stop, expiry, character loss/change, clear, and disposal disable observation; disposal releases the hook.
+- Only exact localized raw bytes from housing custom-sheet row 6 qualify. Rows 7/9 and errors are not targets. Reports label this exact-template-byte evidence, never native sheet/row identity. No formatter/evaluator replay, emitted chat, native callback invocation, or bid-store writes.
+- Detour forwards original arguments exactly once. Recursion/off-thread guards, bounded ReadProcessMemory copies, maximum 16 parameters, 32 pending observations, and 64 observations per arm limit inspection. It never dereferences arbitrary parameter value pointers, reads string parameters, retains native pointers, or formats/logs observations in the detour. Framework draining performs interpretation and reporting.
+- Reports include probe/epoch, observation UTC, public world/territory context, numeric scene/event IDs, parameter indices/types/int32 values, read failures, duplicate/drop/invalidation counters, and candidate fields only when all five arguments and context pass validation. Expected context is housing event 721031 and scene 1; disagreement with observed EventState fields withholds interpretation but preserves bounded raw evidence for investigation. Character identity remains a private invalidation token. FC/Personal remains unverified.
+- Pending observations invalidate across character/world/territory/language changes, stop, and re-arm. Duplicate diagnostic observations are counted, not treated as additional bids. Candidate results time is preserved and compared against the separate global schedule; no date parsing, field substitution, or timestamp correction.
+- Offline verification: 118/118 tests and Release build pass; tests cover exact compatibility gates/template identity, typed/indexed arguments, address/time/context rejection, duplicate/storage limits, session invalidation, and privacy. Tests do **not** establish native ABI correctness, hook lifecycle safety in the game, or successful-entry runtime mapping.
+- First live check: opt in, arm, open/cancel placard, copy events-only report; no NativeSuccess observation expected. For a bid already intended, arm immediately before final confirmation and compare candidate world/district/ward/plot/ticket/results time against the game and Timers. Never spend gil only for diagnostics. An unavailable gate or unexpected observation is a blocker, not permission to bypass checks.
+- Follow-up only after live verification: automatic record persistence/deduplication, verified type context or Timers recovery, and cached API price/size enrichment with source provenance. Missing enrichment must not block a verified bid record.
 
 **B — Confirmed entry capture**
 
@@ -466,7 +491,16 @@ Verified in knowledge-base Dalamud/ClientStructs source:
 - Failed/partial refreshes cannot prove closure or trigger false reopen alerts.
 - Deduplicate notifications across refreshes and plugin reloads.
 
-### Phase 7 — Integration validation (tentative travel)
+### Phase 7 — Integration validation (optional travel)
+
+**Status:** User approved travel integration. Implemented with no required Lifestream dependency; live IPC/movement validation pending. Available Houses: right-click a plot number → Travel to plot. My Bids: right-click address or use Travel....
+
+- Source-confirmed IPC: `Lifestream.GoToHousingAddress`, `IsBusy`, `Abort`, `CanVisitSameDC`, `CanVisitCrossDC`. Temporary housing-address tuples do not save address-book entries. House=0; ward/plot remain one-based, including subdivision plots 31–60.
+- District mapping to Lifestream ResidentialAetheryteKind: Mist 339→8, Lavender Beds 340→2, Goblet 341→9, Shirogane 641→111, Empyreum 979→70. World names resolve from game data by ID rather than trusting manual bid spelling.
+- Address validation, login, IPC availability, busy state, and world support gate travel. Queued actions recheck before execution on the framework thread. IPC failures are caught and logged without disabling core browsing/bids.
+- Requested destination/status and Stop travel are shown. Stop is offered only while a PW-requested operation remains busy; Lifestream Abort affects its entire current queue/movement. Idle status does not prove arrival. Actual route completion depends on Lifestream settings and housing paths; PW performs no placard interaction or lottery actions.
+- Verification: 105/105 offline tests pass; Release build has zero warnings/errors. Tests cover mapping, address bounds/one-based tuples, unavailable/busy/logged-out/unsupported states, queued-state recheck, cancellation guards, IPC failure, and unload. Live IPC signatures and actual movement are not covered by these fake-provider tests.
+- Pending live checks: missing/reloaded Lifestream, same ward, other ward/district/world, subdivision plot, pathing disabled, cancellation, and no saved address-book entry.
 
 | Integration | Required for |
 | --- | --- |

@@ -3,6 +3,7 @@ using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using PlotWatch.Data;
 using PlotWatch.Lottery;
+using PlotWatch.Travel;
 
 namespace PlotWatch.Windows;
 
@@ -97,6 +98,11 @@ public sealed partial class MainWindow
                 ImGui.TableNextColumn();
                 ImGui.TextUnformatted($"{bid.WorldName} / {DistrictLabel(bid.DistrictId)} / W{bid.Ward} P{bid.Plot}");
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip($"Details: {bid.DetailsSource}\nSize: {FormatHousingSize(bid.Size)}\nEntered: {BidDate(bid.EnteredAt)}\nCycle: {bid.CycleId?.ToString() ?? "Unknown"}");
+                if (ImGui.BeginPopupContextItem("bid-travel"))
+                {
+                    DrawTravelAction(new PlotDestination(bid.WorldId, bid.WorldName, bid.DistrictId, bid.Ward, bid.Plot));
+                    ImGui.EndPopup();
+                }
                 ImGui.TableNextColumn(); ImGui.TextUnformatted($"{PurchaseLabel(bid.PurchaseType)} / {bid.TicketNumber?.ToString() ?? "Unknown"}");
                 ImGui.TableNextColumn(); ImGui.TextUnformatted($"{bid.Outcome} ({bid.OutcomeSource})");
                 var dates = BidPolicy.GetDates(bid);
@@ -108,6 +114,12 @@ public sealed partial class MainWindow
                 ImGui.SameLine();
                 if (ImGui.SmallButton("Delete")) deleteBidId = bid.Id;
                 ImGui.EndDisabled();
+                if (ImGui.SmallButton("Travel...")) ImGui.OpenPopup("bid-action-travel");
+                if (ImGui.BeginPopup("bid-action-travel"))
+                {
+                    DrawTravelAction(new PlotDestination(bid.WorldId, bid.WorldName, bid.DistrictId, bid.Ward, bid.Plot));
+                    ImGui.EndPopup();
+                }
                 ImGui.PopID();
             }
             ImGui.EndTable();

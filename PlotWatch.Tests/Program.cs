@@ -62,7 +62,7 @@ var tests = new (string Name, Action Test)[]
     ("PaissaDB cooldown wait can be cancelled", PaissaCooldownCancellation),
     ("PaissaDB requests use conservative spacing", PaissaRequestSpacing),
     ("PaissaDB cooldown extension delays requests already waiting", PaissaCooldownRace),
-}.Concat(BidTests.Cases).Concat(HousingProbeTests.Cases).ToArray();
+}.Concat(BidTests.Cases).Concat(HousingProbeTests.Cases).Concat(TravelTests.Cases).Concat(HousingNativeTests.Cases).Concat(PaissaStatusTests.Cases).ToArray();
 
 var failures = 0;
 foreach (var (name, test) in tests)
@@ -645,13 +645,13 @@ static void HousingClosureCountdown()
 {
     var plot = HousingTestPlot();
     var entryEnd = LotterySchedule.ApplicationAnchorUtc.AddDays(5);
-    Equal("Closes in 4d 00:00:00", PaissaHousingPolicy.GetClosureCountdown(plot, entryEnd));
-    Equal("Closes in 00:00:01", PaissaHousingPolicy.GetClosureCountdown(plot, entryEnd.AddTicks(-1)));
-    Equal("Closes in 5d 00:00:00", PaissaHousingPolicy.GetClosureCountdown(plot, entryEnd.AddDays(4)));
-    Equal("Closes in 4d 00:00:00", PaissaHousingPolicy.GetClosureCountdown(plot with { LottoPhaseUntil = null }, entryEnd));
-    Equal("Closes in 4d 00:00:00", PaissaHousingPolicy.GetClosureCountdown(plot with { LottoPhaseUntil = long.MinValue }, entryEnd));
-    Equal("Closure time is unknown.", PaissaHousingPolicy.GetClosureCountdown(plot with { PurchaseSystem = 6 }, entryEnd));
-    Equal("Closes in 4d 00:00:00", PaissaHousingPolicy.GetClosureCountdown(plot, entryEnd.ToOffset(TimeSpan.FromHours(-6))));
+    Equal("Period ends in 4d 00:00:00", PaissaHousingPolicy.GetClosureCountdown(plot, entryEnd));
+    Equal("Period ends in 00:00:01", PaissaHousingPolicy.GetClosureCountdown(plot, entryEnd.AddTicks(-1)));
+    Equal("Period ends in 5d 00:00:00", PaissaHousingPolicy.GetClosureCountdown(plot, entryEnd.AddDays(4)));
+    Equal("Period ends in 4d 00:00:00", PaissaHousingPolicy.GetClosureCountdown(plot with { LottoPhaseUntil = null }, entryEnd));
+    Equal("Period ends in 4d 00:00:00", PaissaHousingPolicy.GetClosureCountdown(plot with { LottoPhaseUntil = long.MinValue }, entryEnd));
+    Equal("Period end is unknown.", PaissaHousingPolicy.GetClosureCountdown(plot with { PurchaseSystem = 6 }, entryEnd));
+    Equal("Period ends in 4d 00:00:00", PaissaHousingPolicy.GetClosureCountdown(plot, entryEnd.ToOffset(TimeSpan.FromHours(-6))));
 }
 
 static void HousingFreshnessBoundaries()
