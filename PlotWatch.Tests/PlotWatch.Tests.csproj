@@ -17,6 +17,10 @@
         <Compile Include="..\PlotWatch\Data\BidRecords.cs" Link="Production\BidRecords.cs" />
         <Compile Include="..\PlotWatch\Data\BidStore.cs" Link="Production\BidStore.cs" />
         <Compile Include="..\PlotWatch\Data\BidTracker.cs" Link="Production\BidTracker.cs" />
+        <Compile Include="..\PlotWatch\Data\WatchedPlots.cs" Link="Production\WatchedPlots.cs" />
+        <Compile Include="..\PlotWatch\Data\WatchedPlotSorting.cs" Link="Production\WatchedPlotSorting.cs" />
+        <Compile Include="..\PlotWatch\Data\WatchedPlotStore.cs" Link="Production\WatchedPlotStore.cs" />
+        <Compile Include="..\PlotWatch\Data\WatchedPlotTracker.cs" Link="Production\WatchedPlotTracker.cs" />
         <Compile Include="..\PlotWatch\Data\HousingCharacterSelection.cs" Link="Production\HousingCharacterSelection.cs" />
         <Compile Include="..\PlotWatch\Data\ConfigurationResetConfirmation.cs" Link="Production\ConfigurationResetConfirmation.cs" />
         <Compile Include="..\PlotWatch\Diagnostics\PluginDiagnostics.cs" Link="Production\PluginDiagnostics.cs" />

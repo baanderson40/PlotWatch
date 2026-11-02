@@ -97,12 +97,14 @@ public sealed partial class MainWindow
                 ImGui.TableNextColumn(); ImGui.TextUnformatted(CharacterLabel(bid.CharacterContentId));
                 ImGui.TableNextColumn();
                 ImGui.TextUnformatted($"{bid.WorldName} / {DistrictLabel(bid.DistrictId)} / W{bid.Ward} P{bid.Plot}");
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip($"Details: {bid.DetailsSource}\nSize: {FormatHousingSize(bid.Size)}\nEntered: {BidDate(bid.EnteredAt)}\nCycle: {bid.CycleId?.ToString() ?? "Unknown"}");
-                if (ImGui.BeginPopupContextItem("bid-travel"))
+                var addressHovered = ImGui.IsItemHovered();
+                if (BeginPlotContextPopup("bid-travel"))
                 {
                     DrawTravelAction(new PlotDestination(bid.WorldId, bid.WorldName, bid.DistrictId, bid.Ward, bid.Plot));
                     ImGui.EndPopup();
                 }
+                else if (addressHovered)
+                    ImGui.SetTooltip($"Details: {bid.DetailsSource}\nSize: {FormatHousingSize(bid.Size)}\nEntered: {BidDate(bid.EnteredAt)}\nCycle: {bid.CycleId?.ToString() ?? "Unknown"}");
                 ImGui.TableNextColumn(); ImGui.TextUnformatted($"{PurchaseLabel(bid.PurchaseType)} / {bid.TicketNumber?.ToString() ?? "Unknown"}");
                 ImGui.TableNextColumn(); ImGui.TextUnformatted($"{bid.Outcome} ({bid.OutcomeSource})");
                 var dates = BidPolicy.GetDates(bid);

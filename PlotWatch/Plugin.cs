@@ -60,6 +60,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly Configuration configuration;
     private readonly MainWindow mainWindow;
     private readonly BidTracker bidTracker;
+    private readonly WatchedPlotTracker watchedPlots;
     private readonly PlotTravel plotTravel;
     private long nextBidCharacterRefreshTick;
     private readonly DebugWindow debugWindow;
@@ -112,6 +113,10 @@ public sealed class Plugin : IDalamudPlugin
             (success, message) => RecordDiagnostic(success ? DiagnosticSeverity.Debug : DiagnosticSeverity.Warning, message));
         if (bidTracker.IsReadOnly)
             Log.Warning("Bid data requires recovery; see My Bids. Existing files have not been overwritten.");
+        watchedPlots = new WatchedPlotTracker(new WatchedPlotFileStore(Path.Combine(PluginInterface.GetPluginConfigDirectory(), "watched-plots.json")),
+            (success, message) => RecordDiagnostic(success ? DiagnosticSeverity.Debug : DiagnosticSeverity.Warning, message));
+        if (watchedPlots.IsReadOnly)
+            Log.Warning("Plot watchlist requires recovery; see Dashboard. Existing files have not been overwritten.");
         plotTravel = new PlotTravel(new LifestreamTravelBackend(PluginInterface, DataManager),
             () => PlayerState.IsLoaded && PlayerState.ContentId != 0,
             (success, message) => RecordDiagnostic(success ? DiagnosticSeverity.Debug : DiagnosticSeverity.Warning, message));
@@ -119,7 +124,7 @@ public sealed class Plugin : IDalamudPlugin
         mainWindow = new MainWindow(configuration, diagnostics, SaveConfiguration, resetConfirmation, OpenDebugWindow,
             FetchHousingWorlds, () => RefreshHousingWorlds(), CancelHousingRequest, bidTracker, plotTravel,
             destination => frameworkActions.Enqueue(() => plotTravel.Start(destination)),
-            () => frameworkActions.Enqueue(() => plotTravel.Stop()));
+            () => frameworkActions.Enqueue(() => plotTravel.Stop()), watchedPlots);
         LoadHousingCache();
         mainWindow.SetHousingRefreshCooldown(MaxDate(configuration.HousingRefreshCooldownUntilUtc, paissaApiClient.CooldownUntilUtc));
         mainWindow.SetNextAutomaticRefresh(configuration.HousingNextAutomaticRefreshUtc);
@@ -963,6 +968,7 @@ public sealed class Plugin : IDalamudPlugin
                     continue;
                 var data = new PaissaHousingWorldData(entry.World, entry.DownloadedAtUtc, entry.Listings, entry.Warnings ?? []);
                 housingSnapshots[entry.World.Id] = data;
+                mainWindow.SetHousingWorldData(entry.World.Id, data, "Loaded from local cache");
             }
             if (housingSnapshots.Count > 0)
                 mainWindow.SetHousingWorlds(housingSnapshots.Values.Select(snapshot => snapshot.World).ToArray(),

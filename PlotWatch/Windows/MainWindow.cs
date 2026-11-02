@@ -64,11 +64,13 @@ public sealed partial class MainWindow : Window
         BidTracker bidTracker,
         PlotTravel plotTravel,
         Action<PlotDestination> requestTravel,
-        Action stopTravel)
+        Action stopTravel,
+        WatchedPlotTracker watchedPlots)
         : base("PlotWatch")
     {
         this.configuration = configuration;
         this.bidTracker = bidTracker;
+        this.watchedPlots = watchedPlots;
         this.plotTravel = plotTravel;
         this.requestTravel = requestTravel;
         this.stopTravel = stopTravel;
@@ -187,7 +189,10 @@ public sealed partial class MainWindow : Window
     {
         housingWorldStatuses[worldId] = status;
         if (data is not null)
+        {
             housingCache[worldId] = data;
+            watchedPlots.ObserveWorld(data);
+        }
     }
 
     public void SetHomeWorld(int? worldId, ulong? characterContentId = null)
@@ -244,6 +249,7 @@ public sealed partial class MainWindow : Window
         ImGui.TextWrapped($"Next: {GetPeriodLabel(nextPeriod.Phase)} · {FormatOverviewTime(nextPeriod.StartsAtUtc)}");
 
         DrawBidSummary(snapshot.NowUtc);
+        DrawWatchedPlots(snapshot.NowUtc);
 
         if (!showScheduleDetails)
             return;
@@ -339,7 +345,7 @@ public sealed partial class MainWindow : Window
         ImGui.SameLine();
         if (ImGui.BeginChild("##housing-results", new Vector2(0, 0), false))
         {
-            ImGui.TextDisabled("Right-click a plot number for Travel to plot (Lifestream).");
+            ImGui.TextDisabled("Right-click a plot number to travel or track. * = tracked on Dashboard.");
             DrawHousingResults();
         }
         ImGui.EndChild();
@@ -717,13 +723,21 @@ public sealed partial class MainWindow : Window
             ImGui.TableNextColumn(); ImGui.TextUnformatted(snapshot.World.Name);
             ImGui.TableNextColumn(); ImGui.TextUnformatted(plot.DistrictName);
             ImGui.TableNextColumn(); ImGui.TextUnformatted(plot.WardNumber?.ToString() ?? "Unknown");
-            ImGui.TableNextColumn(); ImGui.TextUnformatted(plot.PlotNumber?.ToString() ?? "Unknown");
-            if (ImGui.BeginPopupContextItem($"travel-{plot.WorldId}-{plot.DistrictId}-{plot.WardNumber}-{plot.PlotNumber}"))
+            ImGui.TableNextColumn();
+            var watchAddress = WatchedPlotPolicy.AddressOf(plot);
+            var tracked = watchAddress is not null && watchedPlots.Contains(watchAddress);
+            ImGui.TextUnformatted((plot.PlotNumber?.ToString() ?? "Unknown") + (tracked ? " *" : ""));
+            var plotHovered = ImGui.IsItemHovered();
+            if (BeginPlotContextPopup($"travel-{plot.WorldId}-{plot.DistrictId}-{plot.WardNumber}-{plot.PlotNumber}"))
             {
                 DrawTravelAction(new PlotDestination(snapshot.World.Id, snapshot.World.Name,
                     plot.DistrictId, plot.WardNumber, plot.PlotNumber));
+                ImGui.Separator();
+                DrawWatchAction(snapshot, plot, asOfUtc);
                 ImGui.EndPopup();
             }
+            else if (plotHovered)
+                ImGui.SetTooltip(tracked ? "Tracked on shared Dashboard. Right-click to travel or untrack." : "Right-click to travel or track on shared Dashboard.");
             ImGui.TableNextColumn(); ImGui.TextUnformatted(FormatHousingSize(plot.Size));
             ImGui.TableNextColumn(); ImGui.TextUnformatted(plot.Price?.ToString("N0") ?? "Unknown");
             ImGui.TableNextColumn(); ImGui.TextUnformatted(PaissaHousingPolicy.DescribeEligibility(plot.PurchaseSystem));

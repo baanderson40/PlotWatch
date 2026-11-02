@@ -6,7 +6,7 @@ namespace PlotWatch.Data;
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public const int CurrentVersion = 10;
+    public const int CurrentVersion = 11;
 
     public int Version { get; set; } = CurrentVersion;
 
@@ -34,6 +34,8 @@ public sealed class Configuration : IPluginConfiguration
     public bool HousingIncludeOutdatedReports { get; set; } = true;
     public DateTimeOffset HousingRefreshCooldownUntilUtc { get; set; }
     public DateTimeOffset HousingNextAutomaticRefreshUtc { get; set; }
+    [Newtonsoft.Json.JsonProperty(ObjectCreationHandling = Newtonsoft.Json.ObjectCreationHandling.Replace)]
+    public List<int> CollapsedWatchedPlotWorldIds { get; set; } = [];
 
     public void Normalize()
     {
@@ -64,6 +66,7 @@ public sealed class Configuration : IPluginConfiguration
             HousingIncludeOutdatedReports = true;
         }
         HousingStatusMask &= 15;
+        CollapsedWatchedPlotWorldIds = (CollapsedWatchedPlotWorldIds ?? []).Where(id => id > 0).Distinct().ToList();
 
         Version = CurrentVersion;
     }
@@ -85,6 +88,7 @@ public sealed class Configuration : IPluginConfiguration
         HousingIncludeOutdatedReports = true;
         HousingRefreshCooldownUntilUtc = default;
         HousingNextAutomaticRefreshUtc = default;
+        CollapsedWatchedPlotWorldIds = [];
         Version = CurrentVersion;
     }
 }
