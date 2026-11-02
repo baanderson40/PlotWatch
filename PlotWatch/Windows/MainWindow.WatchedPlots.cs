@@ -1,5 +1,6 @@
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface.Utility;
 using PlotWatch.Data;
 using PlotWatch.Paissa;
 using PlotWatch.Travel;
@@ -9,7 +10,7 @@ namespace PlotWatch.Windows;
 public sealed partial class MainWindow
 {
     private readonly WatchedPlotTracker watchedPlots;
-    private float watchedPanelContentHeight;
+    private Vector2 watchedPopupPosition;
 
     private void DrawWatchAction(PaissaHousingWorldData snapshot, PaissaPlotListing plot, DateTimeOffset now)
     {
@@ -55,40 +56,39 @@ public sealed partial class MainWindow
             return;
         }
 
-        var maximumHeight = Math.Max(100f, Math.Min(260f, ImGui.GetContentRegionAvail().Y - 30f));
-        // This ImGui version has no AutoResizeY child flag. Measure actual laid-out content
-        // and apply it next frame, capped for scrolling, rather than estimating table rows.
-        var panelHeight = watchedPanelContentHeight > 0 ? Math.Min(watchedPanelContentHeight, maximumHeight) : maximumHeight;
-        if (ImGui.BeginChild("##watched-world-groups", new Vector2(0, panelHeight), true, ImGuiWindowFlags.HorizontalScrollbar))
+        foreach (var group in WatchedPlotPolicy.GroupByWorld(watchedPlots.Data.Plots, housingCache))
         {
-            var contentStartY = ImGui.GetCursorPosY();
-            foreach (var group in WatchedPlotPolicy.GroupByWorld(watchedPlots.Data.Plots, housingCache))
+            ImGui.PushID(group.WorldId);
+            if (ImGui.Button($"{group.WorldName} ({group.Plots.Count}) ▾###watched-world-dropdown"))
             {
-                ImGui.PushID(group.WorldId);
-                var wasOpen = !configuration.CollapsedWatchedPlotWorldIds.Contains(group.WorldId);
-                ImGui.SetNextItemOpen(wasOpen, ImGuiCond.Always);
-                var open = ImGui.CollapsingHeader($"{group.WorldName} ({group.Plots.Count})###watched-world");
-                if (open != wasOpen)
-                {
-                    if (open) configuration.CollapsedWatchedPlotWorldIds.Remove(group.WorldId);
-                    else configuration.CollapsedWatchedPlotWorldIds.Add(group.WorldId);
-                    saveConfiguration();
-                }
-                if (open) DrawWatchedWorldTable(group, now);
-                ImGui.PopID();
+                watchedPopupPosition = new(ImGui.GetItemRectMin().X, ImGui.GetItemRectMax().Y);
+                ImGui.OpenPopup("watched-world-popup");
             }
-            var style = ImGui.GetStyle();
-            watchedPanelContentHeight = Math.Max(0f, ImGui.GetCursorPosY() - contentStartY - style.ItemSpacing.Y)
-                + 2f * (style.WindowPadding.Y + style.ChildBorderSize)
-                + (ImGui.GetScrollMaxX() > 0 ? style.ScrollbarSize : 0f);
+            if (ImGui.IsItemHovered()) PlotWatchTooltips.Show("Open tracked plots for this server. Click outside the popup or press Escape to close.");
+            if (ImGui.IsPopupOpen("watched-world-popup"))
+            {
+                var viewport = ImGui.GetWindowViewport();
+                var maximumWidth = Math.Max(1f, viewport.WorkSize.X - 2f * ImGui.GetStyle().WindowPadding.X);
+                ImGui.SetNextWindowPos(watchedPopupPosition, ImGuiCond.Appearing);
+                ImGui.SetNextWindowSizeConstraints(new Vector2(Math.Min(450f * ImGuiHelpers.GlobalScale, maximumWidth), 0),
+                    new Vector2(maximumWidth, Math.Max(ImGui.GetFrameHeightWithSpacing(), viewport.WorkSize.Y * 0.65f)));
+            }
+            if (ImGui.BeginPopup("watched-world-popup", ImGuiWindowFlags.HorizontalScrollbar))
+            {
+                var viewport = ImGui.GetWindowViewport();
+                var maximumPosition = Vector2.Max(viewport.WorkPos, viewport.WorkPos + viewport.WorkSize - ImGui.GetWindowSize());
+                ImGui.SetWindowPos(Vector2.Clamp(watchedPopupPosition, viewport.WorkPos, maximumPosition));
+                ImGui.TextUnformatted($"{group.WorldName} — tracked plots ({group.Plots.Count})");
+                DrawWatchedWorldTable(group, now);
+                ImGui.EndPopup();
+            }
+            ImGui.PopID();
         }
-        ImGui.EndChild();
     }
 
     private void DrawWatchedWorldTable(WatchedPlotGroup group, DateTimeOffset now)
     {
-        // Let ImGui fit actual row heights, including historical-detail lines. Scrolling belongs
-        // to the outer child, so individual tables need no estimated height or scrollbar padding.
+        // Fit actual row heights; the bounded popup handles scrolling, not individual tables.
         if (!ImGui.BeginTable("##watched-plots", 6, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg |
             ImGuiTableFlags.SizingFixedFit | ImGuiTableFlags.NoHostExtendX | ImGuiTableFlags.Resizable | ImGuiTableFlags.Sortable)) return;
         ImGui.TableSetupColumn("Address", ImGuiTableColumnFlags.DefaultSort, 0, (uint)WatchedPlotSortColumn.Address);
@@ -120,16 +120,14 @@ public sealed partial class MainWindow
             ImGui.TextUnformatted($"{world?.World.Name ?? watch.WorldName} / {DistrictLabel(address.DistrictId)} / W{address.Ward} P{address.Plot}");
             if (ImGui.IsItemHovered())
             {
-                ImGui.BeginTooltip();
-                ImGui.TextUnformatted($"Tracked: {FormatTimestampForDisplay(watch.TrackedAtUtc, includeSeconds: true)}");
-                ImGui.TextWrapped("Shared watchlist only; this does not indicate a lottery entry. Untracking does not cancel travel.");
-                ImGui.EndTooltip();
+                PlotWatchTooltips.Show($"Tracked: {FormatTimestampForDisplay(watch.TrackedAtUtc, includeSeconds: true)}\n" +
+                    "Shared watchlist only; this does not indicate a lottery entry. Untracking does not cancel travel.");
             }
             ImGui.TableNextColumn();
             ImGui.TextUnformatted($"{FormatHousingSize(plot?.Size)} / {plot?.Price?.ToString("N0") ?? "Not reported"}");
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(plot?.LottoEntries?.ToString() ?? "Not reported");
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip(view.Historical
+            if (ImGui.IsItemHovered()) PlotWatchTooltips.Show(view.Historical
                 ? "Last-known reported entrant count, not a current count. Not reported does not mean zero."
                 : "PaissaDB-reported count; may belong to an earlier period. Not reported does not mean zero.");
             ImGui.TableNextColumn();
@@ -140,37 +138,39 @@ public sealed partial class MainWindow
                     ? "Not in latest listings" : view.CacheOlderThanSaved ? "Waiting for newer cached data" : "Waiting for cached data");
             if (ImGui.IsItemHovered())
             {
-                ImGui.BeginTooltip();
-                if (view.Historical) ImGui.TextWrapped("Current plot status is unverified. Absence from listings does not prove sold or claimed. " +
+                var lines = new List<string>();
+                if (view.Historical) lines.Add("Current plot status is unverified. Absence from listings does not prove sold or claimed. " +
                     (plot is null ? "No last-known listing saved." : "Other displayed details are last known."));
                 if (plot is not null)
                 {
-                    ImGui.TextWrapped(view.Historical ? $"Last-known report: {PaissaHousingPolicy.GetReportedStatusLabel(plot.LottoPhase)}."
+                    lines.Add(view.Historical ? $"Last-known report: {PaissaHousingPolicy.GetReportedStatusLabel(plot.LottoPhase)}."
                         : PaissaHousingPolicy.GetReportedStatusExplanation(plot.LottoPhase, plot.LottoPhaseUntil, now));
-                    ImGui.TextUnformatted($"Raw report deadline: {FormatDeadline(PaissaApiParser.UnixSecondsToUtc(plot.LottoPhaseUntil))}");
-                    ImGui.TextUnformatted($"Source observed: {FormatUnixSourceTime(plot.LastUpdatedTime)}");
+                    lines.Add($"Raw report deadline: {FormatDeadline(PaissaApiParser.UnixSecondsToUtc(plot.LottoPhaseUntil))}");
+                    lines.Add($"Source observed: {FormatUnixSourceTime(plot.LastUpdatedTime)}");
                 }
                 if (watch.LastKnown is { } known)
-                    ImGui.TextUnformatted($"Last-known listing downloaded: {FormatTimestampForDisplay(known.DownloadedAtUtc, includeSeconds: true)}");
-                ImGui.TextWrapped($"Available Houses: {PaissaHousingPolicy.GetStatusRefreshGuidance(now, refreshCooldownUntilUtc, housingRequestPending)}");
-                if (housingWorldStatuses.TryGetValue(address.WorldId, out var status)) ImGui.TextWrapped(status);
-                ImGui.EndTooltip();
+                    lines.Add($"Last-known listing downloaded: {FormatTimestampForDisplay(known.DownloadedAtUtc, includeSeconds: true)}");
+                lines.Add($"Available Houses: {PaissaHousingPolicy.GetStatusRefreshGuidance(now, refreshCooldownUntilUtc, housingRequestPending)}");
+                if (housingWorldStatuses.TryGetValue(address.WorldId, out var status)) lines.Add(status);
+                PlotWatchTooltips.Show(lines.ToArray());
             }
             if (view.Historical && plot is not null) ImGui.TextDisabled("Details: last known");
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(view.DownloadedAtUtc is { } downloaded ? FormatAge(downloaded, now) : "No cache loaded");
             if (ImGui.IsItemHovered() && view.DownloadedAtUtc is { } download)
-                ImGui.SetTooltip($"World snapshot downloaded: {FormatTimestampForDisplay(download, includeSeconds: true)}. Download age is not source observation age.");
+                PlotWatchTooltips.Show($"World snapshot downloaded: {FormatTimestampForDisplay(download, includeSeconds: true)}. Download age is not source observation age.");
             ImGui.TableNextColumn();
             var destination = new PlotDestination(address.WorldId, world?.World.Name ?? watch.WorldName, address.DistrictId, address.Ward, address.Plot);
             var reason = plotTravel.GetDisabledReason(destination);
             ImGui.BeginDisabled(reason is not null);
             if (ImGui.SmallButton("Travel to")) requestTravel(destination);
             ImGui.EndDisabled();
-            if (reason is not null && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled)) ImGui.SetTooltip(reason);
+            if (reason is not null && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled)) PlotWatchTooltips.Show(reason);
             ImGui.SameLine();
             ImGui.BeginDisabled(watchedPlots.IsReadOnly);
-            if (ImGui.SmallButton("Untrack")) watchedPlots.Untrack(address);
+            if (ImGui.SmallButton("Untrack") && watchedPlots.Untrack(address) &&
+                !watchedPlots.Data.Plots.Any(item => item.Address.WorldId == group.WorldId))
+                ImGui.CloseCurrentPopup();
             ImGui.EndDisabled();
             ImGui.PopID();
         }

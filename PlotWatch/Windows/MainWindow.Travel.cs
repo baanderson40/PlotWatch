@@ -59,7 +59,7 @@ public sealed partial class MainWindow
         {
             if (ImGui.SmallButton("Stop travel")) stopTravel();
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("Aborts Lifestream's current task queue and movement, including any other queued tasks.");
+                PlotWatchTooltips.Show("Aborts Lifestream's current task queue and movement, including any other queued tasks.");
         }
     }
 }

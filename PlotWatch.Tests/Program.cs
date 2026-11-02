@@ -62,7 +62,7 @@ var tests = new (string Name, Action Test)[]
     ("PaissaDB cooldown wait can be cancelled", PaissaCooldownCancellation),
     ("PaissaDB requests use conservative spacing", PaissaRequestSpacing),
     ("PaissaDB cooldown extension delays requests already waiting", PaissaCooldownRace),
-}.Concat(BidTests.Cases).Concat(HousingProbeTests.Cases).Concat(TravelTests.Cases).Concat(HousingNativeTests.Cases).Concat(PaissaStatusTests.Cases).Concat(WatchedPlotTests.Cases).ToArray();
+}.Concat(BidTests.Cases).Concat(HousingProbeTests.Cases).Concat(TravelTests.Cases).Concat(HousingNativeTests.Cases).Concat(PaissaStatusTests.Cases).Concat(WatchedPlotTests.Cases).Concat(TooltipPlacementTests.Cases).ToArray();
 
 var failures = 0;
 foreach (var (name, test) in tests)

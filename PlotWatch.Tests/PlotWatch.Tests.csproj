@@ -35,5 +35,6 @@
         <Compile Include="..\PlotWatch\Paissa\PaissaHousingPolicy.cs" Link="Production\PaissaHousingPolicy.cs" />
         <Compile Include="..\PlotWatch\Paissa\PaissaHousingSorting.cs" Link="Production\PaissaHousingSorting.cs" />
         <Compile Include="..\PlotWatch\Windows\PlotWatchTab.cs" Link="Production\PlotWatchTab.cs" />
+        <Compile Include="..\PlotWatch\Windows\TooltipPlacement.cs" Link="Production\TooltipPlacement.cs" />
     </ItemGroup>
 </Project>

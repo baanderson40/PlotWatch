@@ -50,7 +50,7 @@ public sealed partial class MainWindow : Window
     ];
     private PlotWatchTab? requestedTab;
     private LotteryScheduleSnapshot? lotterySnapshot;
-    private bool showScheduleDetails;
+    private Vector2 scheduleDetailsPopupPosition;
 
     public MainWindow(
         Configuration configuration,
@@ -95,7 +95,7 @@ public sealed partial class MainWindow : Window
         {
             Icon = FontAwesomeIcon.Bug,
             IconOffset = new Vector2(1, 1),
-            ShowTooltip = () => ImGui.SetTooltip("Open PlotWatch diagnostics."),
+            ShowTooltip = () => PlotWatchTooltips.Show("Open PlotWatch diagnostics."),
             Click = _ => openDebugWindow(),
         });
         Size = new Vector2(820, 600);
@@ -237,9 +237,12 @@ public sealed partial class MainWindow : Window
 
         ImGui.TextUnformatted("Housing Lottery");
         ImGui.SameLine();
-        var detailsLabel = showScheduleDetails ? "Details ▾" : "Details ▸";
-        if (ImGui.SmallButton(detailsLabel))
-            showScheduleDetails = !showScheduleDetails;
+        if (ImGui.SmallButton("Details ▾"))
+        {
+            scheduleDetailsPopupPosition = new(ImGui.GetItemRectMin().X, ImGui.GetItemRectMax().Y);
+            ImGui.OpenPopup("##lottery-details");
+        }
+        DrawScheduleDetailsPopup(snapshot);
 
         ImGui.Separator();
         ImGui.TextUnformatted(phaseName);
@@ -250,21 +253,35 @@ public sealed partial class MainWindow : Window
 
         DrawBidSummary(snapshot.NowUtc);
         DrawWatchedPlots(snapshot.NowUtc);
+    }
 
-        if (!showScheduleDetails)
-            return;
-
-        ImGui.Spacing();
+    private void DrawScheduleDetailsPopup(LotteryScheduleSnapshot snapshot)
+    {
+        if (ImGui.IsPopupOpen("##lottery-details"))
+        {
+            var viewport = ImGui.GetWindowViewport();
+            var width = Math.Max(1f, Math.Min(560f * ImGuiHelpers.GlobalScale,
+                viewport.WorkSize.X - 2f * ImGui.GetStyle().WindowPadding.X));
+            ImGui.SetNextWindowPos(scheduleDetailsPopupPosition, ImGuiCond.Appearing);
+            ImGui.SetNextWindowSizeConstraints(new Vector2(width, 0),
+                new Vector2(width, Math.Max(ImGui.GetFrameHeightWithSpacing(), viewport.WorkSize.Y * 0.65f)));
+        }
+        if (!ImGui.BeginPopup("##lottery-details")) return;
+        var popupViewport = ImGui.GetWindowViewport();
+        var maximumPosition = Vector2.Max(popupViewport.WorkPos,
+            popupViewport.WorkPos + popupViewport.WorkSize - ImGui.GetWindowSize());
+        ImGui.SetWindowPos(Vector2.Clamp(scheduleDetailsPopupPosition, popupViewport.WorkPos, maximumPosition));
+        ImGui.TextUnformatted("Housing Lottery — Details");
         ImGui.Separator();
         DrawPeriodDetails(snapshot.Application);
         ImGui.Spacing();
         DrawPeriodDetails(snapshot.Results);
         ImGui.Spacing();
         ImGui.TextWrapped("Schedule uses a fixed 9-day cycle: 5 application days followed by 4 results days. Individual bid deadlines may differ.");
-        ImGui.TextDisabled("Source: Xenoveritas FFXIV Event/Maintenance Timers");
-        ImGui.SameLine();
+        ImGui.TextWrapped("Source: Xenoveritas FFXIV Event/Maintenance Timers");
         if (ImGui.SmallButton("Open source"))
             Dalamud.Utility.Util.OpenLink("https://xenoveritas.org/static/ffxiv/timer.html");
+        ImGui.EndPopup();
     }
 
     private void DrawPeriodDetails(LotteryPeriodOccurrence period)
@@ -519,26 +536,26 @@ public sealed partial class MainWindow : Window
         }
         if (ImGui.IsItemHovered())
         {
-            ImGui.BeginTooltip();
+            var lines = new List<string>();
             if (housingRequestPending)
             {
-                ImGui.TextUnformatted($"Refreshing world listings: {refreshProgressCompleted}/{refreshProgressTotal} completed.");
+                lines.Add($"Refreshing world listings: {refreshProgressCompleted}/{refreshProgressTotal} completed.");
                 if (refreshCooldownUntilUtc > nowUtc)
-                    ImGui.TextUnformatted($"Server cooldown: {FormatRemaining(refreshCooldownUntilUtc - nowUtc)} remaining.");
+                    lines.Add($"Server cooldown: {FormatRemaining(refreshCooldownUntilUtc - nowUtc)} remaining.");
             }
             else if (refreshCooldownUntilUtc > nowUtc)
             {
-                ImGui.TextUnformatted($"Refresh available in {FormatRemaining(refreshCooldownUntilUtc - nowUtc)}.");
-                ImGui.TextUnformatted("Click to refresh after cooldown.");
+                lines.Add($"Refresh available in {FormatRemaining(refreshCooldownUntilUtc - nowUtc)}.");
+                lines.Add("Click to refresh after cooldown.");
             }
             else
-                ImGui.TextUnformatted("Refresh now — click to refresh all worlds.");
+                lines.Add("Refresh now — click to refresh all worlds.");
 
-            ImGui.TextUnformatted($"Cached worlds: {cacheCount}/{housingWorlds.Count}; listings: {housingCache.Values.Sum(snapshot => snapshot.Listings.Count)}.");
-            ImGui.TextUnformatted($"Oldest download: {(oldest == default ? "never" : oldest.ToString("yyyy-MM-dd HH:mm:ss 'UTC'"))}.");
+            lines.Add($"Cached worlds: {cacheCount}/{housingWorlds.Count}; listings: {housingCache.Values.Sum(snapshot => snapshot.Listings.Count)}.");
+            lines.Add($"Oldest download: {(oldest == default ? "never" : oldest.ToString("yyyy-MM-dd HH:mm:ss 'UTC'"))}.");
             if (nextAutomaticRefreshUtc != default)
-                ImGui.TextUnformatted($"Next automatic refresh: {nextAutomaticRefreshUtc:yyyy-MM-dd HH:mm:ss 'UTC'}.");
-            ImGui.EndTooltip();
+                lines.Add($"Next automatic refresh: {nextAutomaticRefreshUtc:yyyy-MM-dd HH:mm:ss 'UTC'}.");
+            PlotWatchTooltips.Show(lines.ToArray());
         }
     }
 
@@ -737,7 +754,7 @@ public sealed partial class MainWindow : Window
                 ImGui.EndPopup();
             }
             else if (plotHovered)
-                ImGui.SetTooltip(tracked ? "Tracked on shared Dashboard. Right-click to travel or untrack." : "Right-click to travel or track on shared Dashboard.");
+                PlotWatchTooltips.Show(tracked ? "Tracked on shared Dashboard. Right-click to travel or untrack." : "Right-click to travel or track on shared Dashboard.");
             ImGui.TableNextColumn(); ImGui.TextUnformatted(FormatHousingSize(plot.Size));
             ImGui.TableNextColumn(); ImGui.TextUnformatted(plot.Price?.ToString("N0") ?? "Unknown");
             ImGui.TableNextColumn(); ImGui.TextUnformatted(PaissaHousingPolicy.DescribeEligibility(plot.PurchaseSystem));
@@ -753,55 +770,52 @@ public sealed partial class MainWindow : Window
             });
             if (ImGui.IsItemHovered())
             {
-                ImGui.BeginTooltip();
-                ImGui.TextWrapped(PaissaHousingPolicy.GetPhaseExplanation(plot, asOfUtc));
-                ImGui.TextUnformatted($"Raw PaissaDB deadline: {FormatDeadline(PaissaApiParser.UnixSecondsToUtc(plot.LottoPhaseUntil))}");
-                ImGui.TextUnformatted($"Global period ends: {FormatDeadline(displayedDeadline)}");
-                ImGui.TextUnformatted($"Source freshness: {freshness}");
-                ImGui.EndTooltip();
+                PlotWatchTooltips.Show(PaissaHousingPolicy.GetPhaseExplanation(plot, asOfUtc),
+                    $"Raw PaissaDB deadline: {FormatDeadline(PaissaApiParser.UnixSecondsToUtc(plot.LottoPhaseUntil))}",
+                    $"Global period ends: {FormatDeadline(displayedDeadline)}",
+                    $"Source freshness: {freshness}");
             }
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(PaissaHousingPolicy.GetReportedStatusLabel(plot.LottoPhase, plot.LottoPhaseUntil, asOfUtc));
             if (ImGui.IsItemHovered())
             {
-                ImGui.BeginTooltip();
-                ImGui.TextWrapped(PaissaHousingPolicy.GetReportedStatusExplanation(plot.LottoPhase, plot.LottoPhaseUntil, asOfUtc));
+                var lines = new List<string> { PaissaHousingPolicy.GetReportedStatusExplanation(plot.LottoPhase, plot.LottoPhaseUntil, asOfUtc) };
                 if (PaissaHousingPolicy.GetReportedStatusTiming(plot.LottoPhase, plot.LottoPhaseUntil, asOfUtc) == PaissaReportTiming.Outdated)
-                    ImGui.TextWrapped(PaissaHousingPolicy.GetStatusRefreshGuidance(asOfUtc, refreshCooldownUntilUtc, housingRequestPending));
-                ImGui.TextUnformatted($"Raw API phase: {plot.LottoPhase?.ToString() ?? "Not reported"}");
-                ImGui.TextUnformatted($"Raw status deadline: {FormatDeadline(PaissaApiParser.UnixSecondsToUtc(plot.LottoPhaseUntil))}");
-                ImGui.TextUnformatted($"Raw deadline Unix seconds: {plot.LottoPhaseUntil?.ToString() ?? "Not reported"}");
-                ImGui.TextUnformatted($"Source observed: {FormatUnixSourceTime(plot.LastUpdatedTime)}");
-                ImGui.TextUnformatted($"Downloaded: {FormatTimestampForDisplay(snapshot.DownloadedAtUtc, includeSeconds: true)}");
-                ImGui.EndTooltip();
+                    lines.Add(PaissaHousingPolicy.GetStatusRefreshGuidance(asOfUtc, refreshCooldownUntilUtc, housingRequestPending));
+                lines.Add($"Raw API phase: {plot.LottoPhase?.ToString() ?? "Not reported"}");
+                lines.Add($"Raw status deadline: {FormatDeadline(PaissaApiParser.UnixSecondsToUtc(plot.LottoPhaseUntil))}");
+                lines.Add($"Raw deadline Unix seconds: {plot.LottoPhaseUntil?.ToString() ?? "Not reported"}");
+                lines.Add($"Source observed: {FormatUnixSourceTime(plot.LastUpdatedTime)}");
+                lines.Add($"Downloaded: {FormatTimestampForDisplay(snapshot.DownloadedAtUtc, includeSeconds: true)}");
+                PlotWatchTooltips.Show(lines.ToArray());
             }
             ImGui.TableNextColumn(); ImGui.TextUnformatted(plot.LottoEntries?.ToString() ?? "Not reported");
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(plot.LottoEntries is null
+                PlotWatchTooltips.Show(plot.LottoEntries is null
                     ? "PaissaDB has not reported an entrant count. A ward sweep does not necessarily update lottery details."
                     : "PaissaDB-reported entrants. Counts may belong to an earlier period. A ward sweep does not necessarily update lottery details.");
             ImGui.TableNextColumn(); ImGui.TextUnformatted(FormatDeadline(displayedDeadline));
             if (ImGui.IsItemHovered())
             {
-                ImGui.BeginTooltip();
-                ImGui.TextUnformatted(PaissaHousingPolicy.GetClosureCountdown(plot, asOfUtc));
-                ImGui.TextWrapped("Calculated global period end, not a verified bidding deadline for this plot. See Reported status.");
-                ImGui.EndTooltip();
+                PlotWatchTooltips.Show(PaissaHousingPolicy.GetClosureCountdown(plot, asOfUtc),
+                    "Calculated global period end, not a verified bidding deadline for this plot. See Reported status.");
             }
             ImGui.TableNextColumn(); ImGui.TextUnformatted(FormatUnixSourceTime(plot.LastUpdatedTime));
             if (ImGui.IsItemHovered())
             {
-                ImGui.BeginTooltip();
-                ImGui.TextUnformatted($"{snapshot.World.Name} / {plot.DistrictName}");
-                ImGui.TextUnformatted($"IDs: world={plot.WorldId?.ToString() ?? "Unknown"}, district={plot.DistrictId?.ToString() ?? "Unknown"}");
-                ImGui.TextUnformatted($"API address: ward={plot.ApiWardNumber?.ToString() ?? "Unknown"}, plot={plot.ApiPlotNumber?.ToString() ?? "Unknown"}");
-                ImGui.TextUnformatted($"Raw purchase flags: {plot.PurchaseSystem?.ToString() ?? "Unknown"}; raw phase: {plot.LottoPhase?.ToString() ?? "Unknown"}");
-                ImGui.TextUnformatted($"First seen: {FormatUnixSourceTime(plot.FirstSeenTime)}");
-                ImGui.TextWrapped("PaissaDB lists plots reported for sale; continued vacancy is not guaranteed. Last observed can reflect a ward sweep without refreshed lottery details. Download time is separate.");
-                ImGui.TextUnformatted($"Downloaded: {FormatTimestampForDisplay(snapshot.DownloadedAtUtc, includeSeconds: true)}");
+                var lines = new List<string>
+                {
+                    $"{snapshot.World.Name} / {plot.DistrictName}",
+                    $"IDs: world={plot.WorldId?.ToString() ?? "Unknown"}, district={plot.DistrictId?.ToString() ?? "Unknown"}",
+                    $"API address: ward={plot.ApiWardNumber?.ToString() ?? "Unknown"}, plot={plot.ApiPlotNumber?.ToString() ?? "Unknown"}",
+                    $"Raw purchase flags: {plot.PurchaseSystem?.ToString() ?? "Unknown"}; raw phase: {plot.LottoPhase?.ToString() ?? "Unknown"}",
+                    $"First seen: {FormatUnixSourceTime(plot.FirstSeenTime)}",
+                    "PaissaDB lists plots reported for sale; continued vacancy is not guaranteed. Last observed can reflect a ward sweep without refreshed lottery details. Download time is separate.",
+                    $"Downloaded: {FormatTimestampForDisplay(snapshot.DownloadedAtUtc, includeSeconds: true)}",
+                };
                 if (snapshot.Warnings.Count > 0)
-                    ImGui.TextWrapped($"World response has {snapshot.Warnings.Count} schema warning(s).");
-            ImGui.EndTooltip();
+                    lines.Add($"World response has {snapshot.Warnings.Count} schema warning(s).");
+                PlotWatchTooltips.Show(lines.ToArray());
             }
         }
 

@@ -75,7 +75,7 @@ public sealed partial class MainWindow
         if (ImGui.Button("Add bid")) StartBidEditor(null);
         ImGui.EndDisabled();
         if (bidTracker.Data.Characters.Count == 0)
-            ImGui.TextWrapped("Log in to discover a character, or re-enable an excluded character below.");
+            ImGui.TextWrapped("Log in to discover a character, or re-enable an excluded character in Settings.");
 
         var bids = bidTracker.Data.Bids.Where(bid =>
             (!bidsCurrentCharacterOnly || bid.CharacterContentId == bidTracker.CurrentCharacterId) &&
@@ -104,7 +104,7 @@ public sealed partial class MainWindow
                     ImGui.EndPopup();
                 }
                 else if (addressHovered)
-                    ImGui.SetTooltip($"Details: {bid.DetailsSource}\nSize: {FormatHousingSize(bid.Size)}\nEntered: {BidDate(bid.EnteredAt)}\nCycle: {bid.CycleId?.ToString() ?? "Unknown"}");
+                    PlotWatchTooltips.Show($"Details: {bid.DetailsSource}\nSize: {FormatHousingSize(bid.Size)}\nEntered: {BidDate(bid.EnteredAt)}\nCycle: {bid.CycleId?.ToString() ?? "Unknown"}");
                 ImGui.TableNextColumn(); ImGui.TextUnformatted($"{PurchaseLabel(bid.PurchaseType)} / {bid.TicketNumber?.ToString() ?? "Unknown"}");
                 ImGui.TableNextColumn(); ImGui.TextUnformatted($"{bid.Outcome} ({bid.OutcomeSource})");
                 var dates = BidPolicy.GetDates(bid);
@@ -128,7 +128,6 @@ public sealed partial class MainWindow
         }
         DrawBidEditor();
         DrawBidDeleteConfirmation();
-        DrawCharacterManagement();
     }
 
     private static string DistrictLabel(int id) => HousingDistricts.FirstOrDefault(item => item.Id == id).Name ?? "Unknown";
