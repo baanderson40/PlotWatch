@@ -14,7 +14,8 @@ public sealed record PaissaApiResponse<T>(
     T? Data,
     string? Error,
     bool IsSuccess,
-    DateTimeOffset? RetryAfterUtc = null);
+    DateTimeOffset? RetryAfterUtc = null,
+    bool TruncatedResponse = false);
 
 public sealed class PaissaApiClient : IDisposable
 {
@@ -54,6 +55,20 @@ public sealed class PaissaApiClient : IDisposable
 
     public Task<PaissaApiResponse<PaissaWorldInspection>> GetWorldAsync(int worldId, CancellationToken cancellationToken = default)
         => GetAsync<PaissaWorldInspection>($"/worlds/{worldId}", json => PaissaApiParser.InspectWorld(json), cancellationToken);
+
+    public async Task<PaissaApiResponse<PaissaWorldInspection>> GetWorldWithRetryAsync(int worldId,
+        CancellationToken cancellationToken = default, Action<int, PaissaApiResponse<PaissaWorldInspection>>? retrying = null)
+    {
+        const int maximumAttempts = 2;
+        for (var attempt = 1; ; attempt++)
+        {
+            var response = await GetWorldAsync(worldId, cancellationToken).ConfigureAwait(false);
+            if (response.IsSuccess || cancellationToken.IsCancellationRequested || attempt >= maximumAttempts ||
+                (response.StatusCode != HttpStatusCode.TooManyRequests && !response.TruncatedResponse)) return response;
+            retrying?.Invoke(attempt, response);
+            // Every retry enters the same shared pacing/concurrency/Retry-After gates as a normal request.
+        }
+    }
 
     public Task<PaissaApiResponse<string>> GetOpenApiAsync(CancellationToken cancellationToken = default)
         => GetAsync<string>("/openapi.json", json => json, cancellationToken);
@@ -117,7 +132,14 @@ public sealed class PaissaApiClient : IDisposable
         catch (HttpRequestException ex)
         {
             stopwatch.Stop();
-            return new(url, statusCode, stopwatch.Elapsed, fetchedAtUtc, default, ex.Message, false);
+            return new(url, statusCode, stopwatch.Elapsed, fetchedAtUtc, default, ex.Message, false,
+                TruncatedResponse: IsTruncatedResponse(ex));
+        }
+        catch (IOException ex)
+        {
+            stopwatch.Stop();
+            return new(url, statusCode, stopwatch.Elapsed, fetchedAtUtc, default, ex.Message, false,
+                TruncatedResponse: IsTruncatedResponse(ex));
         }
         finally
         {
@@ -125,6 +147,18 @@ public sealed class PaissaApiClient : IDisposable
             if (enteredGate)
                 requestGate.Release();
         }
+    }
+
+    private static bool IsTruncatedResponse(Exception error)
+    {
+        for (var depth = 0; depth < 4; depth++)
+        {
+            if (error is HttpRequestException { HttpRequestError: HttpRequestError.ResponseEnded } or
+                HttpIOException { HttpRequestError: HttpRequestError.ResponseEnded }) return true;
+            if (error.InnerException is not { } inner) return false;
+            error = inner;
+        }
+        return false;
     }
 
     private async Task<TimeSpan> WaitForRequestSlotAsync(CancellationToken cancellationToken)
@@ -189,6 +223,8 @@ public sealed class PaissaApiClient : IDisposable
                 throw new HttpRequestException($"Response exceeded {MaxResponseBytes} byte limit.");
             destination.Write(buffer, 0, read);
         }
+        if (content.Headers.ContentLength is { } expected && destination.Length != expected)
+            throw new HttpIOException(HttpRequestError.ResponseEnded, "Response ended before the declared Content-Length was received.");
         return Encoding.UTF8.GetString(destination.GetBuffer(), 0, (int)destination.Length);
     }
 

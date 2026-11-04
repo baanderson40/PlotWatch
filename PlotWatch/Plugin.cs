@@ -69,6 +69,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly PaissaApiClient paissaApiClient = new();
     private readonly Dictionary<int, PaissaHousingWorldData> housingSnapshots = [];
     private readonly string housingCachePath;
+    private readonly HousingCacheWriter housingCacheWriter;
     private readonly CancellationTokenSource lifetimeCancellation = new();
     private readonly PluginDiagnostics diagnostics;
     private readonly ConfigurationResetConfirmation resetConfirmation;
@@ -97,6 +98,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         configuration = LoadConfiguration(out configurationSaveBlocked);
         housingCachePath = Path.Combine(PluginInterface.GetPluginConfigDirectory(), "housing-cache.json");
+        housingCacheWriter = new HousingCacheWriter(housingCachePath);
         paissaApiClient.RequestStarted += OnPaissaRequestStarted;
         diagnostics = new PluginDiagnostics(
             configurationSaveBlocked ? "Load failed; saving disabled until reset." : "Loaded",
@@ -177,6 +179,8 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.ActivePluginsChanged -= OnActivePluginsChanged;
         lifetimeCancellation.Cancel();
         housingRequestCancellation?.Cancel();
+        // Drain managed cache I/O without blocking unload or requiring another framework callback.
+        _ = housingCacheWriter.CompleteAsync();
         paissaApiClient.RequestStarted -= OnPaissaRequestStarted;
         paissaApiClient.Dispose();
         lifetimeCancellation.Dispose();
@@ -304,6 +308,7 @@ public sealed class Plugin : IDalamudPlugin
 
         while (frameworkActions.TryDequeue(out var frameworkAction))
             frameworkAction();
+        ReportHousingCacheWrites();
 
         CheckAutomaticHousingRefresh();
 
@@ -798,6 +803,7 @@ public sealed class Plugin : IDalamudPlugin
         frameworkActions.Enqueue(() =>
         {
             FinishHousingRequest();
+            _ = housingCacheWriter.FlushAsync();
             var until = MaxDate(configuration.HousingRefreshCooldownUntilUtc, paissaApiClient.CooldownUntilUtc);
             configuration.HousingRefreshCooldownUntilUtc = until;
             configuration.HousingNextAutomaticRefreshUtc = DateTimeOffset.UtcNow.AddHours(1);
@@ -816,20 +822,25 @@ public sealed class Plugin : IDalamudPlugin
     private async Task<PaissaApiResponse<PaissaWorldInspection>> GetHousingWorldWithRetryAsync(
         PaissaWorld world, CancellationToken cancellationToken)
     {
-        const int maxAttempts = 2;
-        for (var attempt = 1; ; attempt++)
+        var attempts = 1;
+        var response = await paissaApiClient.GetWorldWithRetryAsync(world.Id, cancellationToken, (attempt, failed) =>
         {
-            var response = await paissaApiClient.GetWorldAsync(world.Id, cancellationToken).ConfigureAwait(false);
-            if (response.StatusCode != System.Net.HttpStatusCode.TooManyRequests || attempt >= maxAttempts)
+            attempts = attempt + 1;
+            if (failed.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                Log.Warning("PaissaDB rate-limited {World}#{WorldId}; retrying once after shared cooldown until {RetryAfter:O}.",
+                    world.Name, world.Id, failed.RetryAfterUtc ?? paissaApiClient.CooldownUntilUtc);
+            else
+                Log.Warning("PaissaDB truncated the response for {World}#{WorldId}; retrying once through normal shared pacing. Last-good data retained.", world.Name, world.Id);
+        }).ConfigureAwait(false);
+        if (attempts > 1 && response.IsSuccess)
+            Log.Debug("PaissaDB retry recovered {World}#{WorldId} on attempt {Attempt}.", world.Name, world.Id, attempts);
+        if (response.IsSuccess && response.Data is { } data)
+            response = response with { Data = data with
             {
-                if (attempt > 1 && response.IsSuccess)
-                    Log.Debug("PaissaDB retry recovered {World}#{WorldId} on attempt {Attempt}.", world.Name, world.Id, attempt);
-                return response;
-            }
-
-            Log.Warning("PaissaDB rate-limited {World}#{WorldId}; retrying once after shared cooldown until {RetryAfter:O}. Attempt {Attempt}/{MaxAttempts}.",
-                world.Name, world.Id, response.RetryAfterUtc ?? paissaApiClient.CooldownUntilUtc, attempt, maxAttempts);
-        }
+                Listings = Array.AsReadOnly(data.Listings.ToArray()),
+                Warnings = Array.AsReadOnly(data.Warnings.ToArray()),
+            } };
+        return response;
     }
 
     private void ApplyHousingWorldResult(PaissaWorld world, PaissaApiResponse<PaissaWorldInspection>? response, string? error)
@@ -895,7 +906,7 @@ public sealed class Plugin : IDalamudPlugin
         housingBatchSucceeded++;
         RecordVerbose(
             $"Housing cache batch {housingBatchId}: accepted {world.Name}#{world.Id}; plots={inspection.Listings.Count}; downloaded={response.FetchedAtUtc:O}; completed={housingBatchCompleted}/{housingBatchExpected}.");
-        SaveHousingCache();
+        QueueHousingCacheSave();
         var loadedMessage = $"Housing browser loaded {world.Name}: {inspection.Listings.Count} plots, {inspection.Districts.Count} districts, {warnings.Count} response issue(s); {status}.";
         if (warnings.Count == 0)
             RecordVerbose(loadedMessage);
@@ -966,7 +977,8 @@ public sealed class Plugin : IDalamudPlugin
             {
                 if (entry.World is null || entry.Listings is null)
                     continue;
-                var data = new PaissaHousingWorldData(entry.World, entry.DownloadedAtUtc, entry.Listings, entry.Warnings ?? []);
+                var data = new PaissaHousingWorldData(entry.World, entry.DownloadedAtUtc,
+                    Array.AsReadOnly(entry.Listings), Array.AsReadOnly(entry.Warnings ?? []));
                 housingSnapshots[entry.World.Id] = data;
                 mainWindow.SetHousingWorldData(entry.World.Id, data, "Loaded from local cache");
             }
@@ -986,26 +998,21 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    private void SaveHousingCache()
+    private void QueueHousingCacheSave()
     {
-        var stopwatch = Stopwatch.StartNew();
-        var plots = housingSnapshots.Values.Sum(snapshot => snapshot.Listings.Count);
-        try
+        // Copy only the small world-reference array; worker owns serialization and disk I/O.
+        housingCacheWriter.Request(housingSnapshots.Values);
+    }
+
+    private void ReportHousingCacheWrites()
+    {
+        while (housingCacheWriter.TryDequeueResult(out var result))
         {
-            var entries = housingSnapshots.Values.Select(snapshot => new HousingCacheEntry(
-                snapshot.World, snapshot.DownloadedAtUtc, snapshot.Listings.ToArray(), snapshot.Warnings.ToArray())).ToArray();
-            var tempPath = housingCachePath + ".tmp";
-            Directory.CreateDirectory(Path.GetDirectoryName(housingCachePath)!);
-            File.WriteAllText(tempPath, JsonSerializer.Serialize(entries));
-            File.Move(tempPath, housingCachePath, true);
-            stopwatch.Stop();
-            RecordVerbose(
-                $"Housing cache save complete: path='{housingCachePath}'; worlds={entries.Length}; plots={plots}; bytes={new FileInfo(housingCachePath).Length}; elapsed={stopwatch.ElapsedMilliseconds}ms.");
-        }
-        catch (Exception ex)
-        {
-            RecordDiagnostic(DiagnosticSeverity.Warning,
-                $"Housing cache save failed at '{housingCachePath}' after {stopwatch.ElapsedMilliseconds}ms: {ex.GetType().Name}: {ex.Message}; in-memory cache has {housingSnapshots.Count} worlds/{plots} plots.");
+            if (result is { Success: true, Stats: { } stats })
+                RecordVerbose($"Housing cache background save complete: generation={result.Generation}; worlds={stats.Worlds}; plots={stats.Plots}; bytes={stats.Bytes}; elapsed={result.Duration.TotalMilliseconds:F0}ms.");
+            else if (result is not null)
+                RecordDiagnostic(DiagnosticSeverity.Warning,
+                    $"Housing cache background save failed: generation={result.Generation}; elapsed={result.Duration.TotalMilliseconds:F0}ms; {result.Error}; prior disk cache and current in-memory listings retained.");
         }
     }
 

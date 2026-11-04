@@ -32,6 +32,7 @@
         <Compile Include="..\PlotWatch\Travel\PlotTravel.cs" Link="Production\PlotTravel.cs" />
         <Compile Include="..\PlotWatch\Paissa\PaissaApiParser.cs" Link="Production\PaissaApiParser.cs" />
         <Compile Include="..\PlotWatch\Paissa\PaissaApiClient.cs" Link="Production\PaissaApiClient.cs" />
+        <Compile Include="..\PlotWatch\Paissa\HousingCacheWriter.cs" Link="Production\HousingCacheWriter.cs" />
         <Compile Include="..\PlotWatch\Paissa\PaissaHousingPolicy.cs" Link="Production\PaissaHousingPolicy.cs" />
         <Compile Include="..\PlotWatch\Paissa\PaissaHousingSorting.cs" Link="Production\PaissaHousingSorting.cs" />
         <Compile Include="..\PlotWatch\Windows\PlotWatchTab.cs" Link="Production\PlotWatchTab.cs" />
