@@ -6,7 +6,7 @@ namespace PlotWatch.Data;
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public const int CurrentVersion = 11;
+    public const int CurrentVersion = 12;
 
     public int Version { get; set; } = CurrentVersion;
 
@@ -15,6 +15,7 @@ public sealed class Configuration : IPluginConfiguration
     public float TextScalePercent { get; set; } = 100f;
 
     public bool DisplayLotteryTimesInUtc { get; set; }
+    public bool AutomaticallyRecordBids { get; set; }
 
     public bool ChatNotificationsEnabled { get; set; } = true;
 
@@ -76,6 +77,7 @@ public sealed class Configuration : IPluginConfiguration
         DefaultTab = (int)PlotWatchTab.Dashboard;
         TextScalePercent = 100f;
         DisplayLotteryTimesInUtc = false;
+        AutomaticallyRecordBids = false;
         ChatNotificationsEnabled = true;
         ToastNotificationsEnabled = true;
         SoundNotificationsEnabled = false;

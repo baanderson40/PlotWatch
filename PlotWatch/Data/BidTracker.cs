@@ -11,6 +11,91 @@ public sealed class BidTracker
     public bool CanRestoreBackup { get; private set; }
     public string? Error { get; private set; }
     public ulong? CurrentCharacterId { get; private set; }
+    private readonly List<PendingBidCapture> pendingCaptures = [];
+    public IReadOnlyList<PendingBidCapture> PendingCaptures => pendingCaptures;
+    public string CaptureStatus { get; private set; } = "No successful-entry message observed this session.";
+
+    public void ReportCaptureFailure(string message)
+    {
+        CaptureStatus = message;
+        logBidEntry?.Invoke(false, message);
+    }
+
+    public bool SubmitCapture(TrackedCharacter character, BidRecord bid)
+    {
+        if (TryCapture(character, bid))
+        { pendingCaptures.RemoveAll(item => SameCapture(item.Bid, bid)); return true; }
+        if (!Data.ExcludedCharacters.Contains(character.ContentId) && suppressedDiscovery != character.ContentId &&
+            !pendingCaptures.Any(item => SameCapture(item.Bid, bid)))
+        {
+            if (pendingCaptures.Count < 32) pendingCaptures.Add(new(character, bid));
+            else ReportCaptureFailure("Pending capture limit reached (32). New capture not retained; add it manually. Existing pending captures preserved.");
+        }
+        return false;
+    }
+
+    public bool RetryCapture(Guid id)
+    {
+        var pending = pendingCaptures.FirstOrDefault(item => item.Bid.Id == id);
+        if (pending is null || !TryCapture(pending.Character, pending.Bid)) return false;
+        pendingCaptures.Remove(pending);
+        return true;
+    }
+
+    public void DismissCapture(Guid id) => pendingCaptures.RemoveAll(item => item.Bid.Id == id);
+
+    private static bool SameCapture(BidRecord left, BidRecord right) =>
+        left.CharacterContentId == right.CharacterContentId && left.WorldId == right.WorldId &&
+        left.DistrictId == right.DistrictId && left.Ward == right.Ward && left.Plot == right.Plot &&
+        left.CycleId == right.CycleId && left.TicketNumber == right.TicketNumber;
+
+    private bool TryCapture(TrackedCharacter character, BidRecord bid)
+    {
+        bool Fail(string reason) { ReportCaptureFailure(reason); return false; }
+        if (character.ContentId != bid.CharacterContentId || bid.MessageEvidence is null || bid.CycleId is null ||
+            bid.ResultsAt is null || bid.TicketNumber is null || BidPolicy.Validate(bid) is not null)
+            return Fail("Invalid successful-entry capture; manual review required.");
+        if (Data.ExcludedCharacters.Contains(character.ContentId) || suppressedDiscovery == character.ContentId)
+            return Fail("Successful-entry capture ignored: character tracking disabled.");
+        if (IsReadOnly) return Fail("Capture pending: bid storage is read-only. Recover storage, then retry in My Bids.");
+        var candidates = Data.Bids.Where(item => item.CharacterContentId == bid.CharacterContentId &&
+            item.WorldId == bid.WorldId && item.DistrictId == bid.DistrictId && item.Ward == bid.Ward && item.Plot == bid.Plot &&
+            (item.CycleId == bid.CycleId || item.CycleId is null)).ToArray();
+        if (candidates.Length > 1) return Fail("Capture pending: multiple matching records. Resolve duplicates manually, then retry.");
+        var existing = candidates.SingleOrDefault();
+        if (existing is not null)
+        {
+            if ((existing.CycleId is null && existing.ResultsAt?.Value != bid.ResultsAt.Value) ||
+                (existing.TicketNumber is { } ticket && ticket != bid.TicketNumber) ||
+                (existing.ResultsAt is { } results && results.Value != bid.ResultsAt.Value))
+                return Fail("Capture pending: conflicting ticket, date, or uncertain cycle. Review existing record, then retry.");
+            // Repeated delivery must not refresh historical cache evidence or write again.
+            if (existing.MessageEvidence is not null && SameCapture(existing, bid))
+            { CaptureStatus = "Duplicate successful-entry message ignored."; return true; }
+            bid = existing with
+            {
+                CycleId = existing.CycleId ?? bid.CycleId,
+                TicketNumber = existing.TicketNumber ?? bid.TicketNumber,
+                TicketSource = existing.TicketNumber is null ? BidFieldSource.GameObserved : existing.TicketSource,
+                ResultsAt = existing.ResultsAt ?? bid.ResultsAt,
+                Size = existing.Size ?? (existing.CacheEvidence is null ? bid.Size : existing.CacheEvidence.Size),
+                SizeFromCache = existing.Size is null ? (existing.CacheEvidence is null ? bid.SizeFromCache : existing.CacheEvidence.Size is not null) : existing.SizeFromCache,
+                Price = existing.Price ?? (existing.CacheEvidence is null ? bid.Price : existing.CacheEvidence.Price),
+                CacheEvidence = existing.CacheEvidence ?? bid.CacheEvidence,
+                MessageEvidence = bid.MessageEvidence,
+            };
+        }
+        var next = Data with
+        {
+            Characters = Data.Characters.Any(item => item.ContentId == character.ContentId)
+                ? Data.Characters : Data.Characters.Append(character).ToArray(),
+            Bids = Data.Bids.Where(item => item.Id != bid.Id).Append(bid).ToArray(),
+        };
+        if (!Commit(next)) return Fail("Capture pending: " + (Error ?? "Save failed; recover storage and retry."));
+        CaptureStatus = $"Recorded successful entry: {bid.WorldName}, district {bid.DistrictId}, W{bid.Ward} P{bid.Plot}, ticket {bid.TicketNumber}.";
+        logBidEntry?.Invoke(true, CaptureStatus);
+        return true;
+    }
 
     public BidTracker(IBidStore store, Action<bool, string>? logBidEntry = null)
     {
@@ -68,7 +153,6 @@ public sealed class BidTracker
             logBidEntry?.Invoke(false, "Bid entry rejected: bid storage is read-only; recovery required.");
             return false;
         }
-        if (BidPolicy.Validate(bid) is { } validation) return RejectBidEntry(validation);
         if (!Data.Characters.Any(character => character.ContentId == bid.CharacterContentId))
             return RejectBidEntry("Choose a tracked character.");
         var existing = Data.Bids.FirstOrDefault(item => item.Id == bid.Id);
@@ -76,13 +160,22 @@ public sealed class BidTracker
             return RejectBidEntry("Re-enable this character before adding bids.");
         if (existing is not null)
         {
+            var sameLocation = existing.CharacterContentId == bid.CharacterContentId && existing.WorldId == bid.WorldId &&
+                existing.DistrictId == bid.DistrictId && existing.Ward == bid.Ward && existing.Plot == bid.Plot && existing.CycleId == bid.CycleId;
             bid = bid with
             {
-                EnteredAt = PreserveObserved(existing.EnteredAt, bid.EnteredAt),
-                ResultsAt = PreserveObserved(existing.ResultsAt, bid.ResultsAt),
-                ClaimDeadline = PreserveObserved(existing.ClaimDeadline, bid.ClaimDeadline),
+                EnteredAt = sameLocation ? PreserveObserved(existing.EnteredAt, bid.EnteredAt) : bid.EnteredAt,
+                ResultsAt = sameLocation ? PreserveObserved(existing.ResultsAt, bid.ResultsAt) : bid.ResultsAt,
+                ClaimDeadline = sameLocation ? PreserveObserved(existing.ClaimDeadline, bid.ClaimDeadline) : bid.ClaimDeadline,
+                SizeFromCache = sameLocation && existing.Size == bid.Size && bid.SizeFromCache,
+                TicketSource = sameLocation && existing.TicketNumber == bid.TicketNumber ? bid.TicketSource : BidFieldSource.Manual,
+                // Moving a manual record must not attribute the old plot's cache/message evidence to the new address.
+                Price = sameLocation ? bid.Price : null,
+                CacheEvidence = sameLocation ? bid.CacheEvidence : null,
+                MessageEvidence = sameLocation ? bid.MessageEvidence : null,
             };
         }
+        if (BidPolicy.Validate(bid) is { } validation) return RejectBidEntry(validation);
         if (!allowDuplicate && Data.Bids.Any(item => BidPolicy.IsDuplicate(item, bid)))
             return RejectBidEntry("A matching character/cycle/plot/type record exists. Confirm duplicate to save another record.");
         var saved = Commit(Data with { Bids = Data.Bids.Where(item => item.Id != bid.Id).Append(bid).ToArray() });

@@ -50,7 +50,7 @@ public sealed class BidFileStore(string path) : IBidStore
             ?? throw new InvalidDataException("Empty bid document.");
         if (data.Version > BidDocument.CurrentVersion) throw new NewerBidSchemaException();
         if (data.Version < 0) throw new InvalidDataException("Unsupported bid schema.");
-        // Version 0 used the same fields; migration adds the explicit version marker.
+        // Versions 0/1 retain all manual fields; v2 adds nullable capture/enrichment evidence.
         data = data with { Version = BidDocument.CurrentVersion };
         if (BidPolicy.ValidateDocument(data) is { } error) throw new InvalidDataException(error);
         return data;

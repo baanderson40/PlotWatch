@@ -4,7 +4,7 @@ Dalamud plugin for FFXIV housing lottery tracking, available-plot discovery, ale
 
 Commands: `/plotwatch` and `/pw`.
 
-> **Status:** Phases 1–2 implemented; Phase 3 multi-world PaissaDB browser and hardening implemented. Phase 4 character management/manual bid records implemented; user validated manual add/edit and reload persistence, with remaining acceptance checks pending. Release build and offline verification results are recorded separately from in-game acceptance. Phase 2 schedule/dashboard and Phase 3 hardening validated in-game. Phase 5 read-only capture diagnostics implemented; automatic capture is not implemented. Optional Lifestream travel implemented; live acceptance pending. Alerts remain pending. Sweep automation and local housing capture are out of scope.
+> **Status:** Phases 1–2 implemented; Phase 3 multi-world PaissaDB browser and hardening implemented. Phase 4 character management/manual bid records implemented; user validated manual add/edit and reload persistence, with remaining acceptance checks pending. Release build and offline verification results are recorded separately from in-game acceptance. Phase 2 schedule/dashboard and Phase 3 hardening validated in-game. Phase 5 opt-in successful-entry system-message recording implemented; live acceptance and FC/Personal confirmation correlation remain pending. Optional Lifestream travel implemented; live acceptance pending. Alerts remain pending. Sweep automation and ward-data collection are out of scope.
 
 ## Product specification
 
@@ -37,7 +37,7 @@ Commands: `/plotwatch` and `/pw`.
 - Outcomes: Pending, Won, Lost, Claimed. Do not infer a loss merely because results period started.
 - Notify once when results become available and when a win is observed; provide configurable claim/refund reminders.
 - Character management supports exclude/re-enable and remove. Excluding stops future capture but preserves records. Removing requires confirmation and deletes that character's saved records; removal alone does not prevent rediscovery.
-- English-first UI for initial release. Prefer verified message/sheet identity plus numeric SeString parameters for capture, avoiding localized rendered-text matching. Whether the housing custom-sheet confirmation is exposed through a suitable event remains unverified; English fallback requires explicit approval and validation.
+- English-first UI for initial release. Native custom-sheet argument capture remains unverified. User-approved primary capture now matches complete installed localized successful-entry system-message text; no English-only fallback or loose numeric-token parsing. Unsupported template macros fail closed. Rendered template shape is never labeled native message identity.
 - Persist bid history and user settings locally per plugin installation. Single-client scope; no cross-client shared storage requirement.
 
 ### PaissaDB house browser and alerts
@@ -260,7 +260,19 @@ Commands: `/plotwatch` and `/pw`.
 
 ### Phase 5 — Passive bid capture and results
 
-**Status:** Source and installed-game investigation, read-only Housing Capture diagnostics, and explicitly opt-in native success probe implemented; automatic capture is not implemented. Latest verification: Release build and 118/118 offline tests pass. User reports validate templates, Timers, and rendered placard count/deadline gap patch. Native probe compatibility/negative controls and actual successful-entry mapping require live verification.
+**Status:** Read-only diagnostics/native probe plus opt-in successful-entry system-message recording implemented. Native success mapping remains unverified (probe missed user's actual entry); system-message route is independent. Current implementation/acceptance limits below supersede earlier diagnostic-only investigation notes.
+
+**2026-11-06 successful-entry message auto-recording**
+
+- Settings adds **Automatically record successful bids**, initially off (configuration v12). Only original `SystemMessage` text is considered; no player chat, Echo, instructions, existing-entry guide, or diagnostic/probe arming dependency. Subscriptions are removed on unload. No game actions, Timers reads, or additional HTTP requests.
+- `Data/BidMessageParser.cs` evaluates the installed custom sheet row 6's allowlisted macro structure into a complete anchored matcher. Districts come from the same localized TerritoryType→PlaceName lookup. Ward/plot/ticket are bounded captures. Date branches use sampled `gnum77` (global index 76, integer type checked); local timezone is sampled at receipt and applied at the expected UTC results boundary. Full displayed date/time must match that boundary; ambiguous local time and unsupported expressions reject. Delivery grace is two minutes after current cycle's results start, not the next displayed Application occurrence.
+- Receipt copies character identity and **current world**, never substitutes home world, and persists message-observed time separately from server entry time (EnteredAt remains unknown). Bid schema v2 adds localized text/template hash/date-parameter/timezone evidence and cached price/size with cache download/API-report provenance. Versions 0/1 load without rewriting disk or manual fields. Cached price is not verified deposit paid. Missing/ambiguous/invalid enrichment never blocks recording; later API refreshes do not update historical bids.
+- Confirmation type association is deliberately **not enabled**: success and cancellation both finalize `SelectYesNoTextScroll`, and no verified acceptance/cancellation mapping exists. New captures save Unknown type; existing uniquely matched manual FC/Personal type is preserved. No timeout, eligibility-derived type, guessed callback IDs, or stale dialog association.
+- Separate conservative reconciliation preserves record ID, outcome, known manual fields and historical enrichment. Duplicate delivery avoids writes. Conflicting ticket/date, multiple candidates, and unknown-cycle records without matching results evidence require manual review. Exclusion and session removal suppression block captures; read-only recovery is respected. Manual size/address edits clear inappropriate cached provenance.
+- Atomic save-before-publish is reused for character+bid together. Failed/conflicting captures retain original receipt context in a bounded 32-item session queue; My Bids shows address/ticket/cycle, retry and confirmed dismissal. Queue overflow never evicts existing pending captures. Pending captures are **not durable across unload**; UI warns to resolve or record manually first. Unparsed candidates cannot be retried automatically and explicitly direct manual entry. Logs omit content IDs and unrelated chat.
+- Offline tests cover reconstructed English success fixture (raw live message was not exported), synthetic localized literal changes, full-message rejection, bounds, date order, timezone/DST/midnight/conflicts, phase-boundary delivery, schema migration/roundtrip, cache matching, manual reconciliation, duplicates, exclusions/removal/read-only, failed writes/retry and queue bounds. These tests do **not** validate live global-parameter reads, actual other-language sheets, chat lifecycle, ImGui, or FC confirmation correlation.
+- Live acceptance pending: enable setting; opening/canceling dialogs must create nothing; next **naturally intended** bid should save once, show correct current-world/address/ticket/results with Unknown type, and survive reload. No extra bid solely for testing. Native diagnostics remain read-only and separate.
+- Verification: **186/186 offline tests pass**; Release build has zero warnings/errors; `git diff --check` clean. Implementation left uncommitted.
 
 #### User decisions and investigation boundaries
 

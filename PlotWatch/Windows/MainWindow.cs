@@ -920,6 +920,15 @@ public sealed partial class MainWindow : Window
             saveConfiguration();
         }
 
+        var autoRecordBids = configuration.AutomaticallyRecordBids;
+        if (ImGui.Checkbox("Automatically record successful bids (off by default)", ref autoRecordBids))
+        {
+            configuration.AutomaticallyRecordBids = autoRecordBids;
+            saveConfiguration();
+        }
+        ImGui.TextWrapped("Records bids you place manually from complete localized system messages. Never places bids. Independent of diagnostics; no native success hook or Timers required.");
+        ImGui.TextWrapped("Unverified entry type stays Unknown. Cached price/size are API reports, not proof of deposit paid. Failed captures appear in My Bids.");
+
         ImGui.Spacing();
         DrawBidStorageStatus();
         DrawCharacterManagement();

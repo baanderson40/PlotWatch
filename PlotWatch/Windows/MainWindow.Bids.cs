@@ -64,7 +64,28 @@ public sealed partial class MainWindow
     private void DrawBids()
     {
         DrawBidStorageStatus();
-        ImGui.TextWrapped("Manual records only. No chat, placard, or lottery-status capture yet. Outcomes change only when explicitly recorded.");
+        ImGui.TextWrapped("Manual records plus optional successful-entry system-message recording (Settings). Outcomes change only when explicitly recorded.");
+        ImGui.TextWrapped(bidTracker.CaptureStatus);
+        if (bidTracker.PendingCaptures.Count > 0)
+        {
+            ImGui.TextWrapped("Unsaved captures — retained only until plugin unload. Retry after resolving storage/conflicts, or record manually before dismissing.");
+            foreach (var pending in bidTracker.PendingCaptures.ToArray())
+            {
+                var captured = pending.Bid;
+                ImGui.PushID(captured.Id.ToString());
+                ImGui.TextUnformatted($"{pending.Character.Name} / {captured.WorldName} / {DistrictLabel(captured.DistrictId)} W{captured.Ward} P{captured.Plot} / ticket {captured.TicketNumber} / cycle {captured.CycleId}");
+                if (ImGui.SmallButton("Retry save")) bidTracker.RetryCapture(captured.Id);
+                ImGui.SameLine();
+                if (ImGui.SmallButton("Dismiss pending...")) ImGui.OpenPopup("dismiss-capture");
+                if (ImGui.BeginPopup("dismiss-capture"))
+                {
+                    ImGui.TextWrapped("Discard this unsaved capture? Record it manually first if needed.");
+                    if (ImGui.Button("Discard capture")) { bidTracker.DismissCapture(captured.Id); ImGui.CloseCurrentPopup(); }
+                    ImGui.EndPopup();
+                }
+                ImGui.PopID();
+            }
+        }
         ImGui.Checkbox("Current character only", ref bidsCurrentCharacterOnly);
         ImGui.SameLine();
         ImGui.SetNextItemWidth(130);
@@ -104,7 +125,9 @@ public sealed partial class MainWindow
                     ImGui.EndPopup();
                 }
                 else if (addressHovered)
-                    PlotWatchTooltips.Show($"Details: {bid.DetailsSource}\nSize: {FormatHousingSize(bid.Size)}\nEntered: {BidDate(bid.EnteredAt)}\nCycle: {bid.CycleId?.ToString() ?? "Unknown"}");
+                    PlotWatchTooltips.Show($"Details: {bid.DetailsSource}\nSize: {FormatHousingSize(bid.Size)} ({(bid.SizeFromCache ? "PaissaDB cache" : "manual/unknown")})\nCached price: {bid.Price?.ToString("N0") ?? "Unknown"} (not verified deposit)\nEntered: {BidDate(bid.EnteredAt)}\nCycle: {bid.CycleId?.ToString() ?? "Unknown"}" +
+                        (bid.MessageEvidence is { } evidence ? $"\nSystem-message text observed: {FormatTimestampForDisplay(evidence.ObservedAtUtc)}\n{evidence.Language}; {evidence.TimeZoneId}; date parameter={evidence.DateFormat}\nMatched localized template shape, not native message identity.\nType unverified unless recorded manually." : "") +
+                        (bid.CacheEvidence is { } cache ? $"\nAPI cache downloaded: {FormatTimestampForDisplay(cache.FetchedAtUtc)}\nAPI report timestamp (Unix): {cache.ReportUpdatedAtUnix?.ToString(CultureInfo.InvariantCulture) ?? "Unknown"}" : ""));
                 ImGui.TableNextColumn(); ImGui.TextUnformatted($"{PurchaseLabel(bid.PurchaseType)} / {bid.TicketNumber?.ToString() ?? "Unknown"}");
                 ImGui.TableNextColumn(); ImGui.TextUnformatted($"{bid.Outcome} ({bid.OutcomeSource})");
                 var dates = BidPolicy.GetDates(bid);
@@ -229,7 +252,9 @@ public sealed partial class MainWindow
             CharacterContentId = editorCharacter, WorldId = editorWorldId, WorldName = editorWorldName.Trim(),
             DistrictId = HousingDistricts[editorDistrict].Id!.Value, Ward = editorWard, Plot = editorPlot,
             Size = editorSize == 0 ? null : editorSize - 1, PurchaseType = (BidPurchaseType)editorPurchase,
+            SizeFromCache = editingBid!.SizeFromCache && editingBid.Size == (editorSize == 0 ? null : editorSize - 1),
             TicketNumber = editorTicket == 0 ? null : editorTicket, Outcome = (BidOutcome)editorOutcome,
+            TicketSource = editingBid.TicketNumber == (editorTicket == 0 ? null : editorTicket) ? editingBid.TicketSource : BidFieldSource.Manual,
             OutcomeSource = BidFieldSource.Manual,
             DetailsSource = BidFieldSource.Manual,
             CycleId = (cycleReference ?? entry) is { } reference ? LotterySchedule.GetSnapshot(reference.Value).CycleId : null,

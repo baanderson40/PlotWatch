@@ -8,6 +8,11 @@ public enum BidFieldSource { Manual, Calculated, GameObserved }
 
 public sealed record TrackedCharacter(ulong ContentId, string Name, int HomeWorldId, string HomeWorldName);
 public sealed record BidTimestamp(DateTimeOffset Value, BidFieldSource Source);
+public sealed record BidMessageEvidence(DateTimeOffset ObservedAtUtc, string Language, string TimeZoneId,
+    int DateFormat, string TemplateHash, string RenderedText);
+public sealed record BidCacheEvidence(DateTimeOffset FetchedAtUtc, double? ReportUpdatedAtUnix,
+    int? Size, long? Price);
+public sealed record PendingBidCapture(TrackedCharacter Character, BidRecord Bid);
 
 public sealed record BidRecord
 {
@@ -28,11 +33,16 @@ public sealed record BidRecord
     public BidOutcome Outcome { get; init; }
     public BidFieldSource DetailsSource { get; init; } = BidFieldSource.Manual;
     public BidFieldSource OutcomeSource { get; init; } = BidFieldSource.Manual;
+    public BidMessageEvidence? MessageEvidence { get; init; }
+    public BidCacheEvidence? CacheEvidence { get; init; }
+    public long? Price { get; init; }
+    public bool SizeFromCache { get; init; }
+    public BidFieldSource? TicketSource { get; init; }
 }
 
 public sealed record BidDocument
 {
-    public const int CurrentVersion = 1;
+    public const int CurrentVersion = 2;
     public int Version { get; init; } = CurrentVersion;
     public IReadOnlyList<TrackedCharacter> Characters { get; init; } = [];
     public IReadOnlyList<BidRecord> Bids { get; init; } = [];
@@ -51,6 +61,16 @@ public static class BidPolicy
         if (bid.Ward is < 1 or > 30 || bid.Plot is < 1 or > 60) return "Ward must be 1–30; plot must be 1–60.";
         if (bid.Size is < 0 or > 2) return "Size must be unknown, small, medium, or large.";
         if (bid.TicketNumber is <= 0) return "Ticket number must be positive or unknown.";
+        if (bid.Price is < 0 || (bid.SizeFromCache && (bid.Size is null || bid.CacheEvidence?.Size != bid.Size)) ||
+            (bid.Price is not null && bid.CacheEvidence?.Price != bid.Price)) return "Invalid cached bid enrichment.";
+        if (bid.CacheEvidence is { } cache && (cache.Size is < 0 or > 2 || cache.Price is < 0 ||
+            (cache.ReportUpdatedAtUnix is { } updated && !double.IsFinite(updated)))) return "Invalid cache evidence.";
+        if (bid.TicketSource is { } ticketSource && ticketSource is not (BidFieldSource.Manual or BidFieldSource.GameObserved))
+            return "Invalid ticket provenance.";
+        if (bid.MessageEvidence is { } evidence && (evidence.RenderedText is null || evidence.RenderedText.Length is 0 or > 4096 ||
+            string.IsNullOrWhiteSpace(evidence.Language) || string.IsNullOrWhiteSpace(evidence.TimeZoneId) ||
+            evidence.TemplateHash is null || evidence.TemplateHash.Length != 64 || evidence.DateFormat is < 0 or > 3))
+            return "Invalid system-message evidence.";
         if (!Enum.IsDefined(bid.PurchaseType) || !Enum.IsDefined(bid.Outcome) ||
             !Enum.IsDefined(bid.DetailsSource) || bid.DetailsSource == BidFieldSource.Calculated ||
             !Enum.IsDefined(bid.OutcomeSource) || bid.OutcomeSource == BidFieldSource.Calculated)
