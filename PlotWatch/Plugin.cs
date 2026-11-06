@@ -61,6 +61,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly MainWindow mainWindow;
     private readonly BidTracker bidTracker;
     private readonly BidMessageCapture bidMessageCapture;
+    private readonly BidResultCapture bidResultCapture;
     private readonly WatchedPlotTracker watchedPlots;
     private readonly PlotTravel plotTravel;
     private long nextBidCharacterRefreshTick;
@@ -146,6 +147,8 @@ public sealed class Plugin : IDalamudPlugin
         bidMessageCapture = new BidMessageCapture(Framework, PlayerState, DataManager, ChatGui, bidTracker,
             () => configuration.AutomaticallyRecordBids && !configurationSaveBlocked,
             world => housingSnapshots.GetValueOrDefault(world));
+        bidResultCapture = new BidResultCapture(Framework, PlayerState, DataManager, AddonLifecycle, bidTracker,
+            () => configuration.AutomaticallyRecordBids && !configurationSaveBlocked);
         debugWindow = new DebugWindow(configuration, diagnostics, QueueDiagnostic, housingProbe,
             options => frameworkActions.Enqueue(() => housingCapture.Arm(options)));
         windowSystem.AddWindow(mainWindow);
@@ -180,6 +183,7 @@ public sealed class Plugin : IDalamudPlugin
     public void Dispose()
     {
         bidMessageCapture.Dispose();
+        bidResultCapture.Dispose();
         housingCapture.Dispose();
         PluginInterface.ActivePluginsChanged -= OnActivePluginsChanged;
         lifetimeCancellation.Cancel();

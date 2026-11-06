@@ -12,7 +12,12 @@ public sealed record BidMessageEvidence(DateTimeOffset ObservedAtUtc, string Lan
     int DateFormat, string TemplateHash, string RenderedText);
 public sealed record BidCacheEvidence(DateTimeOffset FetchedAtUtc, double? ReportUpdatedAtUnix,
     int? Size, long? Price);
+public sealed record BidResultEvidence(DateTimeOffset ObservedAtUtc, string Language, string TemplateHash,
+    uint TemplateRow, string RenderedText);
+public sealed record BidAddressEvidence(DateTimeOffset ObservedAtUtc, string Language, string TemplateHash,
+    int DistrictId, int Ward, int Plot, int? Size, string RenderedText);
 public sealed record PendingBidCapture(TrackedCharacter Character, BidRecord Bid);
+public sealed record PendingBidRecovery(Guid Id, TrackedCharacter Character, BidRecord Bid, string Reason);
 
 public sealed record BidRecord
 {
@@ -38,11 +43,14 @@ public sealed record BidRecord
     public long? Price { get; init; }
     public bool SizeFromCache { get; init; }
     public BidFieldSource? TicketSource { get; init; }
+    public int? WinningNumber { get; init; }
+    public BidResultEvidence? ResultEvidence { get; init; }
+    public BidAddressEvidence? AddressEvidence { get; init; }
 }
 
 public sealed record BidDocument
 {
-    public const int CurrentVersion = 2;
+    public const int CurrentVersion = 3;
     public int Version { get; init; } = CurrentVersion;
     public IReadOnlyList<TrackedCharacter> Characters { get; init; } = [];
     public IReadOnlyList<BidRecord> Bids { get; init; } = [];
@@ -67,6 +75,15 @@ public static class BidPolicy
             (cache.ReportUpdatedAtUnix is { } updated && !double.IsFinite(updated)))) return "Invalid cache evidence.";
         if (bid.TicketSource is { } ticketSource && ticketSource is not (BidFieldSource.Manual or BidFieldSource.GameObserved))
             return "Invalid ticket provenance.";
+        if (bid.WinningNumber is <= 0 || (bid.ResultEvidence is { TemplateRow: 7122 or 7124 } && bid.WinningNumber is null))
+            return "Invalid winning-number evidence.";
+        if (bid.ResultEvidence is { } result && (result.RenderedText is null || result.RenderedText.Length is 0 or > 4096 ||
+            string.IsNullOrWhiteSpace(result.Language) || result.TemplateHash is null || result.TemplateHash.Length != 64 ||
+            result.TemplateRow is not (7122 or 7124 or 7128))) return "Invalid result-dialog evidence.";
+        if (bid.AddressEvidence is { } address && (address.RenderedText is null || address.RenderedText.Length is 0 or > 512 ||
+            string.IsNullOrWhiteSpace(address.Language) || address.TemplateHash is null || address.TemplateHash.Length != 64 ||
+            address.DistrictId != bid.DistrictId || address.Ward != bid.Ward || address.Plot != bid.Plot ||
+            (address.Size is < 0 or > 2) || (address.Size is { } observedSize && bid.Size != observedSize))) return "Invalid placard-address evidence.";
         if (bid.MessageEvidence is { } evidence && (evidence.RenderedText is null || evidence.RenderedText.Length is 0 or > 4096 ||
             string.IsNullOrWhiteSpace(evidence.Language) || string.IsNullOrWhiteSpace(evidence.TimeZoneId) ||
             evidence.TemplateHash is null || evidence.TemplateHash.Length != 64 || evidence.DateFormat is < 0 or > 3))

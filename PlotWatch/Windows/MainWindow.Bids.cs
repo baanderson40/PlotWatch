@@ -31,6 +31,8 @@ public sealed partial class MainWindow
     private bool editorAllowDuplicate;
     private string? editorError;
     private Guid? deleteBidId;
+    private Guid? editingRecoveryId;
+    private bool recoveryAcknowledged;
     private ulong? removeCharacterId;
     private bool removeAndExclude;
 
@@ -64,7 +66,7 @@ public sealed partial class MainWindow
     private void DrawBids()
     {
         DrawBidStorageStatus();
-        ImGui.TextWrapped("Manual records plus optional successful-entry system-message recording (Settings). Outcomes change only when explicitly recorded.");
+        ImGui.TextWrapped("Manual records plus optional successful-entry and result-dialog capture (Settings). Outcomes change only from explicit edits or complete matching result dialogs.");
         ImGui.TextWrapped(bidTracker.CaptureStatus);
         if (bidTracker.PendingCaptures.Count > 0)
         {
@@ -83,6 +85,21 @@ public sealed partial class MainWindow
                     if (ImGui.Button("Discard capture")) { bidTracker.DismissCapture(captured.Id); ImGui.CloseCurrentPopup(); }
                     ImGui.EndPopup();
                 }
+                ImGui.PopID();
+            }
+        }
+        if (bidTracker.PendingResultRecoveries.Count > 0)
+        {
+            ImGui.Separator();
+            ImGui.TextWrapped("Result recovery candidates — session only; nothing saved yet. Check address, outcome, and cycle before saving.");
+            foreach (var recovery in bidTracker.PendingResultRecoveries.ToArray())
+            {
+                var candidate = recovery.Bid;
+                ImGui.PushID(recovery.Id.ToString());
+                ImGui.TextWrapped($"{recovery.Character.Name} / {candidate.WorldName} / {DistrictLabel(candidate.DistrictId)} W{candidate.Ward} P{candidate.Plot} / {candidate.Outcome} / ticket {candidate.TicketNumber?.ToString() ?? "Unknown"} / cycle {candidate.CycleId?.ToString() ?? "Unknown"}. {recovery.Reason}");
+                if (ImGui.SmallButton("Review candidate")) StartRecoveryEditor(recovery);
+                ImGui.SameLine();
+                if (ImGui.SmallButton("Dismiss")) bidTracker.DismissResultRecovery(recovery.Id);
                 ImGui.PopID();
             }
         }
@@ -127,6 +144,7 @@ public sealed partial class MainWindow
                 else if (addressHovered)
                     PlotWatchTooltips.Show($"Details: {bid.DetailsSource}\nSize: {FormatHousingSize(bid.Size)} ({(bid.SizeFromCache ? "PaissaDB cache" : "manual/unknown")})\nCached price: {bid.Price?.ToString("N0") ?? "Unknown"} (not verified deposit)\nEntered: {BidDate(bid.EnteredAt)}\nCycle: {bid.CycleId?.ToString() ?? "Unknown"}" +
                         (bid.MessageEvidence is { } evidence ? $"\nSystem-message text observed: {FormatTimestampForDisplay(evidence.ObservedAtUtc)}\n{evidence.Language}; {evidence.TimeZoneId}; date parameter={evidence.DateFormat}\nMatched localized template shape, not native message identity.\nType unverified unless recorded manually." : "") +
+                        (bid.ResultEvidence is { } result ? $"\nResult dialog row: Addon/{result.TemplateRow}; observed: {FormatTimestampForDisplay(result.ObservedAtUtc)}\nWinning number: {bid.WinningNumber?.ToString() ?? "not displayed"}\n{result.Language}; complete localized dialog match." : "") +
                         (bid.CacheEvidence is { } cache ? $"\nAPI cache downloaded: {FormatTimestampForDisplay(cache.FetchedAtUtc)}\nAPI report timestamp (Unix): {cache.ReportUpdatedAtUnix?.ToString(CultureInfo.InvariantCulture) ?? "Unknown"}" : ""));
                 ImGui.TableNextColumn(); ImGui.TextUnformatted($"{PurchaseLabel(bid.PurchaseType)} / {bid.TicketNumber?.ToString() ?? "Unknown"}");
                 ImGui.TableNextColumn(); ImGui.TextUnformatted($"{bid.Outcome} ({bid.OutcomeSource})");
@@ -159,6 +177,8 @@ public sealed partial class MainWindow
 
     private void StartBidEditor(BidRecord? bid)
     {
+        editingRecoveryId = null;
+        recoveryAcknowledged = false;
         editingBid = bid ?? new BidRecord { Id = Guid.NewGuid() };
         var character = bidTracker.Data.Characters.FirstOrDefault(item => item.ContentId == (bid?.CharacterContentId ?? bidTracker.CurrentCharacterId))
             ?? bidTracker.Data.Characters.FirstOrDefault();
@@ -181,6 +201,15 @@ public sealed partial class MainWindow
         editorClaim = EditDate(bid?.ClaimDeadline);
         editorAllowDuplicate = false;
         editorError = null;
+        openBidEditor = true;
+    }
+
+    private void StartRecoveryEditor(PendingBidRecovery recovery)
+    {
+        StartBidEditor(recovery.Bid);
+        editingRecoveryId = recovery.Id;
+        editorCharacter = recovery.Character.ContentId;
+        recoveryAcknowledged = false;
         openBidEditor = true;
     }
 
@@ -216,10 +245,18 @@ public sealed partial class MainWindow
         ImGui.InputText("Results start (UTC override)", ref editorResults, 40);
         ImGui.InputText("Claim deadline (UTC override)", ref editorClaim, 40);
         ImGui.TextWrapped("Blank deadline overrides use calculated cycle estimates when a cycle is known. Game-observed fields take precedence over manual edits.");
+        if (editingRecoveryId is not null)
+        {
+            ImGui.TextWrapped("Recovery evidence is not proof of ticket, entry time, or purchase type. Confirm details before saving.");
+            if (string.IsNullOrWhiteSpace(editorCycle))
+                ImGui.Checkbox("I reviewed evidence; cycle remains unknown", ref recoveryAcknowledged);
+            else
+                ImGui.Checkbox("I reviewed evidence and selected a cycle", ref recoveryAcknowledged);
+        }
         ImGui.Combo("Outcome", ref editorOutcome, Enum.GetNames<BidOutcome>(), 4);
         ImGui.Checkbox("Save duplicate deliberately", ref editorAllowDuplicate);
         if (editorError is { } error) ImGui.TextWrapped(error);
-        ImGui.BeginDisabled(bidTracker.IsReadOnly);
+        ImGui.BeginDisabled(bidTracker.IsReadOnly || (editingRecoveryId is not null && !recoveryAcknowledged));
         if (ImGui.Button("Save bid"))
         {
             if (TryBuildBid(out var bid) && bidTracker.SaveBid(bid!, editorAllowDuplicate))

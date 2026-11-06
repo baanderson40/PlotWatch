@@ -78,6 +78,7 @@ public sealed class BidMessageCapture : IDisposable
                 DistrictId = parsed.DistrictId, Ward = parsed.Ward, Plot = parsed.Plot, TicketNumber = parsed.Ticket,
                 CycleId = parsed.CycleId, ResultsAt = new(parsed.ResultsAtUtc, BidFieldSource.GameObserved),
                 DetailsSource = BidFieldSource.GameObserved, TicketSource = BidFieldSource.GameObserved,
+                OutcomeSource = BidFieldSource.GameObserved,
                 // Receipt is NOT the exact server entry time; outcomes and type are not inferred.
                 MessageEvidence = new(observed, language, zone.Id, dateFormat.Value, templateHash, text),
             };

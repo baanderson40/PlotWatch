@@ -13,6 +13,8 @@ public sealed class BidTracker
     public ulong? CurrentCharacterId { get; private set; }
     private readonly List<PendingBidCapture> pendingCaptures = [];
     public IReadOnlyList<PendingBidCapture> PendingCaptures => pendingCaptures;
+    private readonly List<PendingBidRecovery> pendingResultRecoveries = [];
+    public IReadOnlyList<PendingBidRecovery> PendingResultRecoveries => pendingResultRecoveries;
     public string CaptureStatus { get; private set; } = "No successful-entry message observed this session.";
 
     public void ReportCaptureFailure(string message)
@@ -43,6 +45,91 @@ public sealed class BidTracker
     }
 
     public void DismissCapture(Guid id) => pendingCaptures.RemoveAll(item => item.Bid.Id == id);
+
+    public bool ObserveResult(TrackedCharacter character, int worldId, string worldName, BidResultMatch result,
+        BidResultEvidence evidence, BidAddressEvidence address)
+    {
+        var characterId = character.ContentId;
+        if (characterId == 0 || worldId <= 0 || string.IsNullOrWhiteSpace(worldName) || result.TemplateRow is not (7122 or 7124 or 7128) ||
+            evidence.TemplateRow != result.TemplateRow || evidence.RenderedText is null || evidence.RenderedText.Length is 0 or > 4096 ||
+            string.IsNullOrWhiteSpace(evidence.Language) || evidence.TemplateHash is null || evidence.TemplateHash.Length != 64 ||
+            (result.TemplateRow is 7122 or 7124 ? result.WinningNumber is null or <= 0 : result.WinningNumber is not null) ||
+            address.DistrictId is not (339 or 340 or 341 or 641 or 979) || address.Ward is < 1 or > 30 || address.Plot is < 1 or > 60 ||
+            address.ObservedAtUtc > evidence.ObservedAtUtc || address.TemplateHash is null || address.TemplateHash.Length != 64 ||
+            address.RenderedText is null || address.RenderedText.Length is 0 or > 512 || address.Language != evidence.Language)
+        { CaptureStatus = "Invalid result/address evidence; no bid changed."; return false; }
+        if (Data.ExcludedCharacters.Contains(characterId) || suppressedDiscovery == characterId)
+        { CaptureStatus = "Result recovery ignored: character tracking disabled."; return false; }
+        if (result.CycleId is null)
+        {
+            QueueResultRecovery(character, worldId, worldName, result, evidence, address,
+                "Result matched, but displayed deadline did not verify a lottery cycle. Choose cycle during review.");
+            return false;
+        }
+
+        var candidates = Data.Bids.Where(bid => bid.CharacterContentId == characterId && bid.WorldId == worldId &&
+            bid.DistrictId == address.DistrictId && bid.Ward == address.Ward && bid.Plot == address.Plot &&
+            bid.CycleId == result.CycleId && (result.TemplateRow != 7122 || bid.TicketNumber == result.WinningNumber)).ToArray();
+        if (candidates.Length != 1)
+        {
+            QueueResultRecovery(character, worldId, worldName, result, evidence, address,
+                candidates.Length == 0 ? "No uniquely matching saved bid; review recovery candidate before saving."
+                    : "Multiple saved bids match this result; review and link or dismiss.");
+            return false;
+        }
+
+        var existing = candidates[0];
+        if (existing.Outcome is BidOutcome.Claimed or BidOutcome.Won or BidOutcome.Lost)
+        { CaptureStatus = "Result dialog matched an already-recorded outcome; manual result preserved."; return false; }
+        if (result.TemplateRow == 7124 && existing.Outcome != BidOutcome.Pending)
+        { CaptureStatus = "Loss dialog matched a non-pending bid; no outcome changed."; return false; }
+        var outcome = result.TemplateRow == 7124 ? BidOutcome.Lost : BidOutcome.Won;
+        var nextBid = existing with
+        {
+            Outcome = outcome,
+            OutcomeSource = BidFieldSource.GameObserved,
+            Size = existing.Size ?? address.Size,
+            WinningNumber = result.WinningNumber,
+            ResultEvidence = evidence,
+            AddressEvidence = address,
+        };
+        if (!Commit(Data with { Bids = Data.Bids.Select(bid => bid.Id == existing.Id ? nextBid : bid).ToArray() }))
+        {
+            CaptureStatus = "Result observed, but outcome save failed. Bid remains unchanged; reopen the result dialog after fixing storage or update manually.";
+            return false;
+        }
+        CaptureStatus = $"Recorded lottery result {outcome} for {existing.WorldName}, district {existing.DistrictId}, W{existing.Ward} P{existing.Plot}; winning number {result.WinningNumber?.ToString() ?? "not displayed"}.";
+        logBidEntry?.Invoke(true, CaptureStatus);
+        return true;
+    }
+
+    private void QueueResultRecovery(TrackedCharacter character, int worldId, string worldName, BidResultMatch result,
+        BidResultEvidence evidence, BidAddressEvidence address, string reason)
+    {
+        var outcome = result.TemplateRow == 7124 ? BidOutcome.Lost : BidOutcome.Won;
+        var ticket = result.TemplateRow == 7122 ? result.WinningNumber : null;
+        var draft = new BidRecord
+        {
+            Id = Guid.NewGuid(), CharacterContentId = character.ContentId, WorldId = worldId, WorldName = worldName,
+            DistrictId = address.DistrictId, Ward = address.Ward, Plot = address.Plot, Size = address.Size,
+            PurchaseType = BidPurchaseType.Unknown, CycleId = result.CycleId, TicketNumber = ticket,
+            TicketSource = ticket is null ? null : BidFieldSource.GameObserved,
+            Outcome = outcome, OutcomeSource = BidFieldSource.GameObserved, DetailsSource = BidFieldSource.GameObserved,
+            WinningNumber = result.WinningNumber, ResultEvidence = evidence, AddressEvidence = address,
+        };
+        var duplicate = pendingResultRecoveries.FirstOrDefault(item => item.Character.ContentId == character.ContentId &&
+            item.Bid.WorldId == worldId && item.Bid.DistrictId == address.DistrictId && item.Bid.Ward == address.Ward &&
+            item.Bid.Plot == address.Plot && item.Bid.CycleId == result.CycleId && item.Bid.WinningNumber == result.WinningNumber &&
+            item.Bid.Outcome == outcome);
+        if (duplicate is not null)
+        { CaptureStatus = "Repeated result observation; existing review candidate retained."; return; }
+        if (pendingResultRecoveries.Count >= 32)
+        { ReportCaptureFailure("Result recovery queue full (32); existing candidates preserved. Add bid manually."); return; }
+        pendingResultRecoveries.Add(new(draft.Id, character, draft, reason));
+        CaptureStatus = "Result dialog and placard address matched; bid recovery awaits review. No bid created yet.";
+    }
+
+    public void DismissResultRecovery(Guid id) => pendingResultRecoveries.RemoveAll(item => item.Id == id);
 
     private static bool SameCapture(BidRecord left, BidRecord right) =>
         left.CharacterContentId == right.CharacterContentId && left.WorldId == right.WorldId &&
@@ -173,6 +260,10 @@ public sealed class BidTracker
                 Price = sameLocation ? bid.Price : null,
                 CacheEvidence = sameLocation ? bid.CacheEvidence : null,
                 MessageEvidence = sameLocation ? bid.MessageEvidence : null,
+                WinningNumber = sameLocation ? bid.WinningNumber : null,
+                ResultEvidence = sameLocation ? bid.ResultEvidence : null,
+                AddressEvidence = sameLocation && existing.DistrictId == bid.DistrictId && existing.Ward == bid.Ward && existing.Plot == bid.Plot
+                    ? bid.AddressEvidence : null,
             };
         }
         if (BidPolicy.Validate(bid) is { } validation) return RejectBidEntry(validation);
@@ -184,6 +275,7 @@ public sealed class BidTracker
             logBidEntry?.Invoke(false, $"Bid entry save failed: {Error}");
             return false;
         }
+        pendingResultRecoveries.RemoveAll(item => item.Id == bid.Id);
         var dates = BidPolicy.GetDates(bid);
         logBidEntry?.Invoke(true,
             $"Bid entry {(existing is null ? "added" : "updated")}: world={bid.WorldId}; district={bid.DistrictId}; ward={bid.Ward}; plot={bid.Plot}; " +
