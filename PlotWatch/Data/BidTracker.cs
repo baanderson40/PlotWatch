@@ -158,9 +158,21 @@ public sealed class BidTracker
                 return Fail("Capture pending: conflicting ticket, date, or uncertain cycle. Review existing record, then retry.");
             // Repeated delivery must not refresh historical cache evidence or write again.
             if (existing.MessageEvidence is not null && SameCapture(existing, bid))
-            { CaptureStatus = "Duplicate successful-entry message ignored."; return true; }
+            {
+                if (existing.EnteredAt is null && bid.EnteredAt is { } observedEntry)
+                {
+                    if (!Commit(Data with { Bids = Data.Bids.Select(item => item.Id == existing.Id
+                            ? item with { EnteredAt = observedEntry } : item).ToArray() }))
+                        return Fail("Capture pending: " + (Error ?? "Save failed; recover storage and retry."));
+                    CaptureStatus = "Added successful-entry message receipt time to the existing bid.";
+                    return true;
+                }
+                CaptureStatus = "Duplicate successful-entry message ignored.";
+                return true;
+            }
             bid = existing with
             {
+                EnteredAt = existing.EnteredAt ?? bid.EnteredAt,
                 CycleId = existing.CycleId ?? bid.CycleId,
                 TicketNumber = existing.TicketNumber ?? bid.TicketNumber,
                 TicketSource = existing.TicketNumber is null ? BidFieldSource.GameObserved : existing.TicketSource,

@@ -77,9 +77,11 @@ public sealed class BidMessageCapture : IDisposable
                 Id = Guid.NewGuid(), CharacterContentId = character.ContentId, WorldId = worldId, WorldName = worldName,
                 DistrictId = parsed.DistrictId, Ward = parsed.Ward, Plot = parsed.Plot, TicketNumber = parsed.Ticket,
                 CycleId = parsed.CycleId, ResultsAt = new(parsed.ResultsAtUtc, BidFieldSource.GameObserved),
+                EnteredAt = new(observed, BidFieldSource.GameObserved),
                 DetailsSource = BidFieldSource.GameObserved, TicketSource = BidFieldSource.GameObserved,
                 OutcomeSource = BidFieldSource.GameObserved,
-                // Receipt is NOT the exact server entry time; outcomes and type are not inferred.
+                // Successful-entry message receipt is the best available entry-time estimate.
+                // Preserve separate observed-time evidence; outcomes and purchase type stay unknown.
                 MessageEvidence = new(observed, language, zone.Id, dateFormat.Value, templateHash, text),
             };
             try

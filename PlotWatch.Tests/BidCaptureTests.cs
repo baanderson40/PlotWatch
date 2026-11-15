@@ -25,8 +25,9 @@ internal static class BidCaptureTests
         ("capture parser uses timezone offset at boundary across DST", DaylightSaving),
         ("capture parser fails closed on unknown macros and ambiguous districts", FailClosed),
         ("capture parser follows localized literals without English fallback", LocalizedShape),
-        ("capture records observed time separately and stays unknown type", Save),
+        ("capture uses successful message receipt as entry time and stays unknown type", Save),
         ("capture duplicate does not save or update historical cache", Duplicate),
+        ("capture backfills receipt time onto existing matching record", BackfillReceiptTime),
         ("capture reconciles manual record preserving identity and outcome", ManualMerge),
         ("capture rejects conflicting ticket and ambiguous manual records", Conflicts),
         ("capture unknown cycle needs corroborating results timestamp", UnknownCycle),
@@ -121,6 +122,7 @@ internal static class BidCaptureTests
     {
         Id = Guid.NewGuid(), CharacterContentId = Character.ContentId, WorldId = 65, WorldName = "Midgardsormr",
         DistrictId = 341, Ward = 16, Plot = 54, TicketNumber = 7, CycleId = 0,
+        EnteredAt = new(Received, BidFieldSource.GameObserved),
         ResultsAt = new(LotterySchedule.ApplicationAnchorUtc.AddDays(5), BidFieldSource.GameObserved),
         DetailsSource = BidFieldSource.GameObserved, TicketSource = BidFieldSource.GameObserved,
         MessageEvidence = new(Received, "English", Central.Id, 2, new string('a', 64), Text),
@@ -141,7 +143,7 @@ internal static class BidCaptureTests
         Equal(true, tracker.SubmitCapture(Character, bid)); Equal(1, store.Saves);
         Equal(73, tracker.Data.Characters.Single().HomeWorldId); Equal(65, tracker.Data.Bids.Single().WorldId);
         Equal(BidPurchaseType.Unknown, tracker.Data.Bids.Single().PurchaseType);
-        Equal<BidTimestamp?>(null, tracker.Data.Bids.Single().EnteredAt);
+        Equal<BidTimestamp?>(new(Received, BidFieldSource.GameObserved), tracker.Data.Bids.Single().EnteredAt);
         Equal(Received, tracker.Data.Bids.Single().MessageEvidence!.ObservedAtUtc);
         Equal<BidCacheEvidence?>(null, tracker.Data.Bids.Single().CacheEvidence);
     }
@@ -151,6 +153,16 @@ internal static class BidCaptureTests
         Equal(true, tracker.SubmitCapture(Character, bid));
         Equal(true, tracker.SubmitCapture(Character, bid with { Id = Guid.NewGuid(), Price = 1, CacheEvidence = new(Received, null, null, 1) }));
         Equal(1, store.Saves); Equal(1, tracker.Data.Bids.Count); Equal<long?>(null, tracker.Data.Bids.Single().Price);
+        Equal(new BidTimestamp(Received, BidFieldSource.GameObserved), tracker.Data.Bids.Single().EnteredAt);
+    }
+    private static void BackfillReceiptTime()
+    {
+        var legacy = Capture() with { EnteredAt = null };
+        var store = new Store { Data = new() { Characters = [Character], Bids = [legacy] } };
+        var tracker = new BidTracker(store);
+        Equal(true, tracker.SubmitCapture(Character, Capture()));
+        Equal(1, store.Saves);
+        Equal(new BidTimestamp(Received, BidFieldSource.GameObserved), tracker.Data.Bids.Single().EnteredAt);
     }
     private static BidRecord Manual() => Capture() with
     {
