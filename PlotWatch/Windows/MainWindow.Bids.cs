@@ -43,7 +43,7 @@ public sealed partial class MainWindow
     }
 
     private string BidDate(BidTimestamp? timestamp)
-        => timestamp is null ? "Unknown" : $"{FormatTimestampForDisplay(timestamp.Value)} ({timestamp.Source})";
+        => timestamp is null ? "Unknown" : FormatTimestampForDisplay(timestamp.Value);
 
     private void DrawBidStorageStatus()
     {
@@ -125,7 +125,7 @@ public sealed partial class MainWindow
                 new Vector2(0, 240)))
         {
             ImGui.TableSetupScrollFreeze(0, 1);
-            foreach (var column in new[] { "Character", "Address", "Type / ticket", "Outcome", "Results", "Claim deadline", "Actions" })
+            foreach (var column in new[] { "Character", "Address", "Ticket", "Outcome", "Results", "Claim deadline", "Actions" })
                 ImGui.TableSetupColumn(column);
             ImGui.TableHeadersRow();
             foreach (var bid in ordered.ThenBy(bid => bid.WorldName).ThenBy(bid => bid.DistrictId).ThenBy(bid => bid.Ward).ThenBy(bid => bid.Plot).ThenBy(bid => bid.Id).ToArray())
@@ -142,12 +142,12 @@ public sealed partial class MainWindow
                     ImGui.EndPopup();
                 }
                 else if (addressHovered)
-                    PlotWatchTooltips.Show($"Details: {bid.DetailsSource}\nSize: {FormatHousingSize(bid.Size)} ({(bid.SizeFromCache ? "PaissaDB cache" : "manual/unknown")})\nCached price: {bid.Price?.ToString("N0") ?? "Unknown"} (not verified deposit)\nEntered: {BidDate(bid.EnteredAt)}\nCycle: {bid.CycleId?.ToString() ?? "Unknown"}" +
+                    PlotWatchTooltips.Show($"Size: {FormatHousingSize(bid.Size)} ({(bid.SizeFromCache ? "PaissaDB cache" : "manual/unknown")})\nCached price: {bid.Price?.ToString("N0") ?? "Unknown"} (not verified deposit)\nEntered: {BidDate(bid.EnteredAt)}\nCycle: {bid.CycleId?.ToString() ?? "Unknown"}" +
                         (bid.MessageEvidence is { } evidence ? $"\nSuccessful-entry message received: {FormatTimestampForDisplay(evidence.ObservedAtUtc)}\nEntry time uses message receipt time as an estimate.\n{evidence.Language}; {evidence.TimeZoneId}; date parameter={evidence.DateFormat}\nMatched localized template shape, not native message identity.\nPurchase type unverified unless recorded manually." : "") +
                         (bid.ResultEvidence is { } result ? $"\nResult dialog row: Addon/{result.TemplateRow}; observed: {FormatTimestampForDisplay(result.ObservedAtUtc)}\nWinning number: {bid.WinningNumber?.ToString() ?? "not displayed"}\n{result.Language}; complete localized dialog match." : "") +
                         (bid.CacheEvidence is { } cache ? $"\nAPI cache downloaded: {FormatTimestampForDisplay(cache.FetchedAtUtc)}\nAPI report timestamp (Unix): {cache.ReportUpdatedAtUnix?.ToString(CultureInfo.InvariantCulture) ?? "Unknown"}" : ""));
-                ImGui.TableNextColumn(); ImGui.TextUnformatted($"{PurchaseLabel(bid.PurchaseType)} / {bid.TicketNumber?.ToString() ?? "Unknown"}");
-                ImGui.TableNextColumn(); ImGui.TextUnformatted($"{bid.Outcome} ({bid.OutcomeSource})");
+                ImGui.TableNextColumn(); ImGui.TextUnformatted(bid.TicketNumber?.ToString() ?? "Unknown");
+                ImGui.TableNextColumn(); ImGui.TextUnformatted(bid.Outcome.ToString());
                 var dates = BidPolicy.GetDates(bid);
                 ImGui.TableNextColumn(); ImGui.TextUnformatted(BidDate(dates.Results));
                 ImGui.TableNextColumn(); ImGui.TextUnformatted(BidDate(dates.Claim));
@@ -172,7 +172,6 @@ public sealed partial class MainWindow
     }
 
     private static string DistrictLabel(int id) => HousingDistricts.FirstOrDefault(item => item.Id == id).Name ?? "Unknown";
-    private static string PurchaseLabel(BidPurchaseType type) => type == BidPurchaseType.FreeCompany ? "FC" : type.ToString();
     private static string EditDate(BidTimestamp? timestamp) => timestamp?.Value.UtcDateTime.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) ?? "";
 
     private void StartBidEditor(BidRecord? bid)
