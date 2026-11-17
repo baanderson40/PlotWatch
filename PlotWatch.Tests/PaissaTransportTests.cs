@@ -13,6 +13,7 @@ internal static class PaissaTransportTests
         ("world retry cancellation prevents a second HTTP request", () => Cancellation().GetAwaiter().GetResult()),
         ("world retry honors shared Retry-After cooldown", () => RateLimit().GetAwaiter().GetResult()),
         ("world retry does not retry parse limits HTTP errors or unrelated IO", () => NoBroadRetry().GetAwaiter().GetResult()),
+        ("disabled API client sends no HTTP requests", () => Disabled().GetAwaiter().GetResult()),
     ];
     private const string WorldJson = "{\"id\":57,\"name\":\"Siren\",\"num_open_plots\":0,\"districts\":[]}";
     private static void Equal<T>(T expected, T actual)
@@ -109,6 +110,16 @@ internal static class PaissaTransportTests
             Equal(false, response.TruncatedResponse);
             Equal(1, handler.Calls);
         }
+    }
+
+    private static async Task Disabled()
+    {
+        var handler = new Handler(_ => Good());
+        using var client = new PaissaApiClient(handler, allowRequests: false);
+        var response = await client.GetWorldWithRetryAsync(57);
+        Equal(false, response.IsSuccess);
+        Equal("PaissaDB network access disabled.", response.Error);
+        Equal(0, handler.Calls);
     }
 
     private sealed class Handler(Func<int, HttpResponseMessage> respond) : HttpMessageHandler

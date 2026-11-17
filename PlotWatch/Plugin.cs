@@ -20,6 +20,7 @@ namespace PlotWatch;
 
 public sealed class Plugin : IDalamudPlugin
 {
+    private static readonly bool PaissaApiEnabled = false;
     private const string MainCommand = "/plotwatch";
     private const string AliasCommand = "/pw";
 
@@ -68,7 +69,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly DebugWindow debugWindow;
     private readonly HousingCaptureDiagnostics housingCapture;
     private readonly HousingProbeState housingProbe;
-    private readonly PaissaApiClient paissaApiClient = new();
+    private readonly PaissaApiClient paissaApiClient = new(allowRequests: PaissaApiEnabled);
     private readonly Dictionary<int, PaissaHousingWorldData> housingSnapshots = [];
     private readonly string housingCachePath;
     private readonly HousingCacheWriter housingCacheWriter;
@@ -426,6 +427,11 @@ public sealed class Plugin : IDalamudPlugin
 
     private void StartPaissaRequest(DiagnosticAction action)
     {
+        if (!PaissaApiEnabled)
+        {
+            RecordDiagnostic(DiagnosticSeverity.Warning, "PaissaDB API access is disabled; no network request was sent.");
+            return;
+        }
         paissaRequestPending = true;
         paissaRequestCancellation?.Dispose();
         paissaRequestCancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetimeCancellation.Token);
@@ -667,6 +673,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private void CheckAutomaticHousingRefresh()
     {
+        if (!PaissaApiEnabled) return;
         if (housingRequestPending || mainWindow.GetAllHousingWorlds().Count == 0)
             return;
 
@@ -687,6 +694,12 @@ public sealed class Plugin : IDalamudPlugin
 
     private void FetchHousingWorlds()
     {
+        if (!PaissaApiEnabled)
+        {
+            mainWindow.SetHousingWorlds(housingSnapshots.Values.Select(snapshot => snapshot.World).ToArray(),
+                housingSnapshots.Count == 0 ? "PaissaDB access disabled; no local housing cache." : "PaissaDB access disabled; showing local cache only.");
+            return;
+        }
         if (housingRequestPending)
         {
             RecordDiagnostic(DiagnosticSeverity.Debug, "Housing cache startup skipped: another housing request is already active.");
@@ -736,6 +749,12 @@ public sealed class Plugin : IDalamudPlugin
 
     private void RefreshHousingWorlds(bool startupResume = false, bool automatic = false)
     {
+        if (!PaissaApiEnabled)
+        {
+            mainWindow.SetHousingWorlds(housingSnapshots.Values.Select(snapshot => snapshot.World).ToArray(),
+                housingSnapshots.Count == 0 ? "PaissaDB access disabled; no local housing cache." : "PaissaDB access disabled; showing local cache only.");
+            return;
+        }
         var now = DateTimeOffset.UtcNow;
         var serverCooldown = paissaApiClient.CooldownUntilUtc;
         if (housingRequestPending)
@@ -993,7 +1012,7 @@ public sealed class Plugin : IDalamudPlugin
             }
             if (housingSnapshots.Count > 0)
                 mainWindow.SetHousingWorlds(housingSnapshots.Values.Select(snapshot => snapshot.World).ToArray(),
-                    $"Loaded {housingSnapshots.Count} cached worlds; checking directory");
+                    $"Loaded {housingSnapshots.Count} cached worlds; live refresh disabled");
             var plots = housingSnapshots.Values.Sum(snapshot => snapshot.Listings.Count);
             var oldest = housingSnapshots.Values.Select(snapshot => snapshot.DownloadedAtUtc).DefaultIfEmpty().Min();
             stopwatch.Stop();

@@ -23,6 +23,7 @@ public sealed class PaissaApiClient : IDisposable
     public static readonly TimeSpan DefaultMinimumRequestInterval = TimeSpan.FromSeconds(10);
     private const int MaxResponseBytes = 2 * 1024 * 1024;
     private readonly HttpClient httpClient;
+    private readonly bool allowRequests;
     private readonly SemaphoreSlim requestGate = new(2, 2);
     private readonly SemaphoreSlim startGate = new(1, 1);
     private readonly TimeSpan minimumRequestInterval;
@@ -39,9 +40,10 @@ public sealed class PaissaApiClient : IDisposable
     }
     public event Action<string, TimeSpan>? RequestStarted;
 
-    public PaissaApiClient(HttpMessageHandler? handler = null, TimeSpan? minimumRequestInterval = null)
+    public PaissaApiClient(HttpMessageHandler? handler = null, TimeSpan? minimumRequestInterval = null, bool allowRequests = true)
     {
         this.minimumRequestInterval = minimumRequestInterval ?? DefaultMinimumRequestInterval;
+        this.allowRequests = allowRequests;
         if (this.minimumRequestInterval < TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(minimumRequestInterval));
         httpClient = handler is null
@@ -80,6 +82,8 @@ public sealed class PaissaApiClient : IDisposable
     {
         var url = BaseUrl + path;
         var fetchedAtUtc = DateTimeOffset.UtcNow;
+        if (!allowRequests)
+            return new(url, null, TimeSpan.Zero, fetchedAtUtc, default, "PaissaDB network access disabled.", false);
         var stopwatch = new Stopwatch();
         HttpStatusCode? statusCode = null;
         var enteredGate = false;

@@ -265,18 +265,9 @@ public sealed class DebugWindow : Window
 
     private void DrawPaissaApi()
     {
-        ImGui.TextWrapped("Requests run only when you press a check button. Responses are kept in memory for this session; failed requests do not erase the last successful result.");
+        ImGui.TextWrapped("PaissaDB API access is disabled. PlotWatch will not send requests. Housing listings can only come from the saved local cache.");
         ImGui.TextDisabled($"Base URL: {PaissaApiClient.BaseUrl}");
-        ImGui.Separator();
-
-        if (DrawActionButton("Fetch worlds"))
-            enqueueAction(DiagnosticAction.FetchPaissaWorlds);
-        ImGui.SameLine();
-        if (DrawActionButton("Inspect OpenAPI schema"))
-            enqueueAction(DiagnosticAction.InspectPaissaSchema);
-        if (diagnostics.IsRequestPending && ImGui.Button("Cancel current API request"))
-            enqueueAction(DiagnosticAction.CancelPaissaRequest);
-        ImGui.TextWrapped($"World list: {diagnostics.PaissaWorldsStatus}; cached worlds: {diagnostics.PaissaWorlds.Count}; last success: {diagnostics.PaissaWorldsLastSuccessUtc?.ToString("O") ?? "none"}");
+        ImGui.TextWrapped("Saved-cache status is shown in the Houses tab.");
 
         if (diagnostics.PaissaWorlds.Count > 0)
         {
@@ -295,8 +286,7 @@ public sealed class DebugWindow : Window
                 ImGui.EndCombo();
             }
 
-            if (DrawActionButton("Inspect selected world"))
-                enqueueAction(DiagnosticAction.InspectPaissaWorld);
+            ImGui.TextDisabled("Live API inspection disabled.");
         }
         else
         {

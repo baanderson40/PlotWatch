@@ -328,13 +328,8 @@ public sealed partial class MainWindow : Window
 
         if (housingWorlds.Count == 0)
         {
-            ImGui.TextDisabled("Listings from PaissaDB. Download time and source observation time are separate.");
-            ImGui.TextWrapped($"World directory: {housingDirectoryStatus}");
-            if (ImGui.Button("Fetch world directory"))
-            {
-                requestedHousingWorlds = true;
-                fetchHousingWorlds();
-            }
+            ImGui.TextDisabled("PaissaDB access is disabled. No saved local housing listings are available.");
+            ImGui.TextWrapped($"Housing cache: {housingDirectoryStatus}");
             return;
         }
 
@@ -526,36 +521,12 @@ public sealed partial class MainWindow : Window
         var nowUtc = lotterySnapshot?.NowUtc ?? DateTimeOffset.MinValue;
         var cacheCount = housingCache.Count;
         var oldest = housingCache.Values.Select(snapshot => snapshot.DownloadedAtUtc).DefaultIfEmpty().Min();
-        var label = housingRequestPending
-            ? $"Refreshing: {refreshProgressCompleted}/{refreshProgressTotal} worlds"
-            : $"Cached: {cacheCount} worlds - {(cacheCount == 0 ? "never" : FormatAge(oldest, nowUtc))}";
-        if (ImGui.Selectable(label, false, ImGuiSelectableFlags.None, Vector2.Zero))
-        {
-            if (!housingRequestPending && refreshCooldownUntilUtc <= nowUtc)
-                refreshHousingWorlds();
-        }
+        ImGui.TextDisabled($"Local cache: {cacheCount} worlds - {(cacheCount == 0 ? "empty" : FormatAge(oldest, nowUtc))}");
         if (ImGui.IsItemHovered())
         {
-            var lines = new List<string>();
-            if (housingRequestPending)
-            {
-                lines.Add($"Refreshing world listings: {refreshProgressCompleted}/{refreshProgressTotal} completed.");
-                if (refreshCooldownUntilUtc > nowUtc)
-                    lines.Add($"Server cooldown: {FormatRemaining(refreshCooldownUntilUtc - nowUtc)} remaining.");
-            }
-            else if (refreshCooldownUntilUtc > nowUtc)
-            {
-                lines.Add($"Refresh available in {FormatRemaining(refreshCooldownUntilUtc - nowUtc)}.");
-                lines.Add("Click to refresh after cooldown.");
-            }
-            else
-                lines.Add("Refresh now — click to refresh all worlds.");
-
-            lines.Add($"Cached worlds: {cacheCount}/{housingWorlds.Count}; listings: {housingCache.Values.Sum(snapshot => snapshot.Listings.Count)}.");
-            lines.Add($"Oldest download: {(oldest == default ? "never" : oldest.ToString("yyyy-MM-dd HH:mm:ss 'UTC'"))}.");
-            if (nextAutomaticRefreshUtc != default)
-                lines.Add($"Next automatic refresh: {nextAutomaticRefreshUtc:yyyy-MM-dd HH:mm:ss 'UTC'}.");
-            PlotWatchTooltips.Show(lines.ToArray());
+            PlotWatchTooltips.Show("Live PaissaDB refresh is disabled. Listings come only from the saved local cache.",
+                $"Cached worlds: {cacheCount}/{housingWorlds.Count}; listings: {housingCache.Values.Sum(snapshot => snapshot.Listings.Count)}.",
+                $"Oldest download: {(oldest == default ? "never" : oldest.ToString("yyyy-MM-dd HH:mm:ss 'UTC'"))}.");
         }
     }
 
@@ -670,7 +641,7 @@ public sealed partial class MainWindow : Window
             .Select(world => housingCache[world.Id]).ToArray();
         if (snapshots.Length == 0)
         {
-            ImGui.TextDisabled("No successful listing responses cached. Select worlds, then refresh selected.");
+            ImGui.TextDisabled("No saved local housing listings are available. Live API access is disabled.");
             return;
         }
         foreach (var failedWorld in selectedWorlds.Where(world => housingWorldStatuses.TryGetValue(world.Id, out var state) && state.Contains("failed", StringComparison.OrdinalIgnoreCase)))
@@ -781,7 +752,7 @@ public sealed partial class MainWindow : Window
             {
                 var lines = new List<string> { PaissaHousingPolicy.GetReportedStatusExplanation(plot.LottoPhase, plot.LottoPhaseUntil, asOfUtc) };
                 if (PaissaHousingPolicy.GetReportedStatusTiming(plot.LottoPhase, plot.LottoPhaseUntil, asOfUtc) == PaissaReportTiming.Outdated)
-                    lines.Add(PaissaHousingPolicy.GetStatusRefreshGuidance(asOfUtc, refreshCooldownUntilUtc, housingRequestPending));
+                    lines.Add("Live status cannot be refreshed because PaissaDB access is disabled.");
                 lines.Add($"Raw API phase: {plot.LottoPhase?.ToString() ?? "Not reported"}");
                 lines.Add($"Raw status deadline: {FormatDeadline(PaissaApiParser.UnixSecondsToUtc(plot.LottoPhaseUntil))}");
                 lines.Add($"Raw deadline Unix seconds: {plot.LottoPhaseUntil?.ToString() ?? "Not reported"}");
