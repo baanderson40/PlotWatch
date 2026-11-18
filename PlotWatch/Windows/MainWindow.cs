@@ -223,6 +223,16 @@ public sealed partial class MainWindow : Window
 
     public bool HasHousingSnapshot(int worldId) => housingCache.ContainsKey(worldId);
 
+    private static string FormatAge(DateTimeOffset utc, DateTimeOffset nowUtc)
+    {
+        if (utc == default) return "unknown";
+        var age = nowUtc - utc;
+        if (age < TimeSpan.Zero) age = TimeSpan.Zero;
+        if (age.TotalDays >= 1) return $"{(int)age.TotalDays}d ago";
+        if (age.TotalHours >= 1) return $"{(int)age.TotalHours}h ago";
+        return $"{Math.Max(1, (int)age.TotalMinutes)}m ago";
+    }
+
     private void DrawDashboard()
     {
         if (lotterySnapshot is not { } snapshot)
@@ -328,7 +338,7 @@ public sealed partial class MainWindow : Window
 
         if (housingWorlds.Count == 0)
         {
-            ImGui.TextDisabled("PaissaDB access is disabled. No saved local housing listings are available.");
+            ImGui.TextDisabled("No cached listings yet. Live plot updates will populate worlds as events arrive.");
             ImGui.TextWrapped($"Housing cache: {housingDirectoryStatus}");
             return;
         }
@@ -337,8 +347,7 @@ public sealed partial class MainWindow : Window
         var sidebarWidth = Math.Min(GetWorldShortcutWidth(), Math.Max(160f, availableWidth - 260f));
         if (ImGui.BeginChild("##housing-filter-sidebar", new Vector2(sidebarWidth, 0), true))
         {
-            var footerHeight = ImGui.GetFrameHeight() + ImGui.GetStyle().ItemSpacing.Y + 8f;
-            if (ImGui.BeginChild("##housing-filter-scroll", new Vector2(0, -footerHeight), false))
+            if (ImGui.BeginChild("##housing-filter-scroll", new Vector2(0, 0), false))
             {
                 DrawWorldFilters();
                 DrawDistrictFilters();
@@ -350,7 +359,6 @@ public sealed partial class MainWindow : Window
                     ResetHousingFilters();
             }
             ImGui.EndChild();
-            DrawCacheRefreshControl();
         }
         ImGui.EndChild();
 
@@ -516,31 +524,6 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void DrawCacheRefreshControl()
-    {
-        var nowUtc = lotterySnapshot?.NowUtc ?? DateTimeOffset.MinValue;
-        var cacheCount = housingCache.Count;
-        var oldest = housingCache.Values.Select(snapshot => snapshot.DownloadedAtUtc).DefaultIfEmpty().Min();
-        ImGui.TextDisabled($"Local cache: {cacheCount} worlds - {(cacheCount == 0 ? "empty" : FormatAge(oldest, nowUtc))}");
-        if (ImGui.IsItemHovered())
-        {
-            PlotWatchTooltips.Show("Live PaissaDB refresh is disabled. Listings come only from the saved local cache.",
-                $"Cached worlds: {cacheCount}/{housingWorlds.Count}; listings: {housingCache.Values.Sum(snapshot => snapshot.Listings.Count)}.",
-                $"Oldest download: {(oldest == default ? "never" : oldest.ToString("yyyy-MM-dd HH:mm:ss 'UTC'"))}.");
-        }
-    }
-
-    private static string FormatAge(DateTimeOffset utc, DateTimeOffset nowUtc)
-    {
-        if (utc == default)
-            return "unknown";
-        var age = nowUtc - utc;
-        if (age < TimeSpan.Zero) age = TimeSpan.Zero;
-        if (age.TotalDays >= 1) return $"{(int)age.TotalDays}d ago";
-        if (age.TotalHours >= 1) return $"{(int)age.TotalHours}h ago";
-        return $"{Math.Max(1, (int)age.TotalMinutes)}m ago";
-    }
-
     private static string FormatRemaining(TimeSpan remaining)
     {
         if (remaining < TimeSpan.Zero) remaining = TimeSpan.Zero;
@@ -641,7 +624,7 @@ public sealed partial class MainWindow : Window
             .Select(world => housingCache[world.Id]).ToArray();
         if (snapshots.Length == 0)
         {
-            ImGui.TextDisabled("No saved local housing listings are available. Live API access is disabled.");
+            ImGui.TextDisabled("No saved listings for selected worlds yet. Waiting for live plot events.");
             return;
         }
         foreach (var failedWorld in selectedWorlds.Where(world => housingWorldStatuses.TryGetValue(world.Id, out var state) && state.Contains("failed", StringComparison.OrdinalIgnoreCase)))
@@ -752,7 +735,7 @@ public sealed partial class MainWindow : Window
             {
                 var lines = new List<string> { PaissaHousingPolicy.GetReportedStatusExplanation(plot.LottoPhase, plot.LottoPhaseUntil, asOfUtc) };
                 if (PaissaHousingPolicy.GetReportedStatusTiming(plot.LottoPhase, plot.LottoPhaseUntil, asOfUtc) == PaissaReportTiming.Outdated)
-                    lines.Add("Live status cannot be refreshed because PaissaDB access is disabled.");
+                    lines.Add("Status updates when PaissaDB sends a live plot event.");
                 lines.Add($"Raw API phase: {plot.LottoPhase?.ToString() ?? "Not reported"}");
                 lines.Add($"Raw status deadline: {FormatDeadline(PaissaApiParser.UnixSecondsToUtc(plot.LottoPhaseUntil))}");
                 lines.Add($"Raw deadline Unix seconds: {plot.LottoPhaseUntil?.ToString() ?? "Not reported"}");

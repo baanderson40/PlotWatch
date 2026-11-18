@@ -8,6 +8,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using System.IO;
 using System.Diagnostics;
+using GameWorld = Lumina.Excel.Sheets.World;
 using PlotWatch.Commands;
 using PlotWatch.Data;
 using PlotWatch.Diagnostics;
@@ -73,6 +74,11 @@ public sealed class Plugin : IDalamudPlugin
     private readonly Dictionary<int, PaissaHousingWorldData> housingSnapshots = [];
     private readonly string housingCachePath;
     private readonly HousingCacheWriter housingCacheWriter;
+    private readonly PaissaWebSocketClient paissaWebSocketClient;
+    private string paissaStreamStatus = "Starting PaissaDB live stream...";
+    private PaissaWebSocketActivity paissaWebSocketActivity = new(0, 0, 0, 0, 0, null, null, null);
+    private int paissaDeltasApplied;
+    private int paissaDeltasIgnored;
     private readonly CancellationTokenSource lifetimeCancellation = new();
     private readonly PluginDiagnostics diagnostics;
     private readonly ConfigurationResetConfirmation resetConfirmation;
@@ -170,11 +176,24 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenConfigUi += OpenConfigUi;
         PluginInterface.ActivePluginsChanged += OnActivePluginsChanged;
         Framework.Update += OnFrameworkUpdate;
+        paissaWebSocketClient = new PaissaWebSocketClient(
+            delta => frameworkActions.Enqueue(() => ApplyPaissaDelta(delta)),
+            status => frameworkActions.Enqueue(() =>
+            {
+                paissaStreamStatus = status;
+                debugWindow.SetPaissaStreamStatus(FormatPaissaStreamStatus());
+            }),
+            activity => frameworkActions.Enqueue(() =>
+            {
+                paissaWebSocketActivity = activity;
+                debugWindow.SetPaissaStreamStatus(FormatPaissaStreamStatus());
+            }));
         diagnostics.DrawCallbackStatus = "Registered";
         diagnostics.MainUiCallbackStatus = "Registered";
         diagnostics.ConfigUiCallbackStatus = "Registered";
         RefreshDependencyStatus();
         FetchHousingWorlds();
+        paissaWebSocketClient.Start();
         Log.Debug("PlotWatch loaded. Version {Version:l}; build ID {BuildId:l}; Dalamud load timestamp UTC {LoadTimestamp:O}.",
             diagnostics.Version,
             diagnostics.BuildId,
@@ -189,6 +208,7 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.ActivePluginsChanged -= OnActivePluginsChanged;
         lifetimeCancellation.Cancel();
         housingRequestCancellation?.Cancel();
+        paissaWebSocketClient.Dispose();
         // Drain managed cache I/O without blocking unload or requiring another framework callback.
         _ = housingCacheWriter.CompleteAsync();
         paissaApiClient.RequestStarted -= OnPaissaRequestStarted;
@@ -673,31 +693,18 @@ public sealed class Plugin : IDalamudPlugin
 
     private void CheckAutomaticHousingRefresh()
     {
-        if (!PaissaApiEnabled) return;
-        if (housingRequestPending || mainWindow.GetAllHousingWorlds().Count == 0)
-            return;
-
-        var now = DateTimeOffset.UtcNow;
-        var scheduled = configuration.HousingNextAutomaticRefreshUtc;
-        if (scheduled != default && now < scheduled)
-            return;
-        if (paissaApiClient.CooldownUntilUtc > now)
-        {
-            mainWindow.SetHousingRefreshCooldown(MaxDate(configuration.HousingRefreshCooldownUntilUtc, paissaApiClient.CooldownUntilUtc));
-            return;
-        }
-
-        RecordDiagnostic(DiagnosticSeverity.Debug,
-            $"Hourly housing refresh due: scheduled={(scheduled == default ? "not set" : scheduled.ToString("O"))}; starting one refresh batch.");
-        RefreshHousingWorlds(automatic: true);
+        // Housing state now arrives only from the persistent delta stream.
     }
 
     private void FetchHousingWorlds()
     {
         if (!PaissaApiEnabled)
         {
-            mainWindow.SetHousingWorlds(housingSnapshots.Values.Select(snapshot => snapshot.World).ToArray(),
-                housingSnapshots.Count == 0 ? "PaissaDB access disabled; no local housing cache." : "PaissaDB access disabled; showing local cache only.");
+            var worlds = GetGameWorlds();
+            foreach (var cached in housingSnapshots.Values)
+                if (!WorldDataCenterMap.IsExcludedTestWorld(cached.World.Name) &&
+                    worlds.All(world => world.Id != cached.World.Id)) worlds.Add(cached.World);
+            mainWindow.SetHousingWorlds(worlds.OrderBy(world => world.Name).ToArray(), paissaStreamStatus);
             return;
         }
         if (housingRequestPending)
@@ -711,6 +718,62 @@ public sealed class Plugin : IDalamudPlugin
         housingRateLimitedWorldCount = 0;
         mainWindow.SetHousingWorlds(null, "Fetching world directory...");
         _ = FetchHousingWorldsAsync(housingRequestCancellation!.Token);
+    }
+
+    private List<PaissaWorld> GetGameWorlds()
+    {
+        var worlds = new List<PaissaWorld>();
+        try
+        {
+            foreach (var row in DataManager.GetExcelSheet<GameWorld>())
+            {
+                if (!row.IsPublic || row.RowId == 0) continue;
+                var name = row.Name.ToString();
+                if (WorldDataCenterMap.IsExcludedTestWorld(name)) continue;
+                worlds.Add(WorldDataCenterMap.CreateWorld((int)row.RowId, name));
+            }
+        }
+        catch (Exception ex)
+        {
+            RecordDiagnostic(DiagnosticSeverity.Warning, $"Could not read game world metadata: {ex.GetType().Name}.");
+        }
+        return worlds;
+    }
+
+    private void ApplyPaissaDelta(PaissaDelta delta)
+    {
+        var world = mainWindow.GetHousingWorld(delta.WorldId) ??
+            housingSnapshots.GetValueOrDefault(delta.WorldId)?.World ??
+            GetGameWorlds().FirstOrDefault(candidate => candidate.Id == delta.WorldId);
+        if (world is null)
+        {
+            paissaDeltasIgnored++;
+            debugWindow.SetPaissaStreamStatus(FormatPaissaStreamStatus());
+            RecordDiagnostic(DiagnosticSeverity.Debug, $"Ignored live plot event for unknown game world #{delta.WorldId}.");
+            return;
+        }
+
+        var current = housingSnapshots.GetValueOrDefault(delta.WorldId);
+        if (!PaissaDeltaParser.TryApply(current, world, delta, DateTimeOffset.UtcNow, out var updated))
+        {
+            paissaDeltasIgnored++;
+            debugWindow.SetPaissaStreamStatus(FormatPaissaStreamStatus());
+            return;
+        }
+        paissaDeltasApplied++;
+        housingSnapshots[delta.WorldId] = updated;
+        debugWindow.SetPaissaStreamStatus(FormatPaissaStreamStatus());
+        mainWindow.SetHousingWorldData(delta.WorldId, updated,
+            $"Live update · {updated.Listings.Count} open plots · received {updated.DownloadedAtUtc:HH:mm:ss} UTC");
+        QueueHousingCacheSave();
+        RecordVerbose($"Applied PaissaDB {delta.Kind} for {world.Name}#{world.Id}, district={delta.DistrictId}, ward={delta.ApiWardNumber + 1}, plot={delta.ApiPlotNumber + 1}; open-plots={updated.Listings.Count}.");
+    }
+
+    private string FormatPaissaStreamStatus()
+    {
+        static string Stamp(DateTimeOffset? value) => value?.ToString("HH:mm:ss 'UTC'") ?? "never";
+        var activity = paissaWebSocketActivity;
+        return $"{paissaStreamStatus} Messages {activity.MessagesReceived} (pings {activity.PingsReceived}, plot deltas {activity.DeltasReceived}, invalid {activity.InvalidMessages}, unknown {activity.UnknownMessages}); applied {paissaDeltasApplied}, ignored {paissaDeltasIgnored}. Last message {Stamp(activity.LastMessageAtUtc)}; last ping {Stamp(activity.LastPingAtUtc)}; last plot delta {Stamp(activity.LastDeltaAtUtc)}.";
     }
 
     private async Task FetchHousingWorldsAsync(CancellationToken cancellationToken)
@@ -751,8 +814,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         if (!PaissaApiEnabled)
         {
-            mainWindow.SetHousingWorlds(housingSnapshots.Values.Select(snapshot => snapshot.World).ToArray(),
-                housingSnapshots.Count == 0 ? "PaissaDB access disabled; no local housing cache." : "PaissaDB access disabled; showing local cache only.");
+            mainWindow.SetHousingWorlds(GetGameWorlds(), paissaStreamStatus);
             return;
         }
         var now = DateTimeOffset.UtcNow;
@@ -1012,7 +1074,7 @@ public sealed class Plugin : IDalamudPlugin
             }
             if (housingSnapshots.Count > 0)
                 mainWindow.SetHousingWorlds(housingSnapshots.Values.Select(snapshot => snapshot.World).ToArray(),
-                    $"Loaded {housingSnapshots.Count} cached worlds; live refresh disabled");
+                    $"Loaded {housingSnapshots.Count} cached worlds; awaiting live stream metadata");
             var plots = housingSnapshots.Values.Sum(snapshot => snapshot.Listings.Count);
             var oldest = housingSnapshots.Values.Select(snapshot => snapshot.DownloadedAtUtc).DefaultIfEmpty().Min();
             stopwatch.Stop();

@@ -19,7 +19,7 @@ public sealed class DebugWindow : Window
         (DiagnosticSection.CommandsAndUi, "Commands & UI", "Command ownership, callback registration, and window lifecycle."),
         (DiagnosticSection.Dependencies, "Dependencies", "Installed/loaded metadata for optional companion plugins."),
         (DiagnosticSection.LotteryClock, "Lottery Clock", "Calculated 9-day housing-lottery schedule and timezone display."),
-        (DiagnosticSection.PaissaApi, "PaissaDB API", "Explicit read-only checks against the live PaissaDB API."),
+        (DiagnosticSection.PaissaApi, "PaissaDB Stream", "Live WebSocket connection and delta activity."),
         (DiagnosticSection.HousingCapture, "Housing Capture", "Read-only, opt-in evidence probe. No automatic capture, bid writes, or game actions."),
         (DiagnosticSection.LogsAndErrors, "Logs & Errors", "Recent diagnostic results retained for this session."),
     ];
@@ -35,6 +35,7 @@ public sealed class DebugWindow : Window
     private bool probeAddonNames = true;
     private bool probeNativeSuccess;
     private int probeNumericId;
+    private string paissaStreamStatus = "Waiting for stream status...";
 
     public DebugWindow(Configuration configuration, PluginDiagnostics diagnostics, Action<DiagnosticAction> enqueueAction,
         HousingProbeState housingProbe, Action<HousingProbeOptions> armHousingProbe)
@@ -87,6 +88,8 @@ public sealed class DebugWindow : Window
     }
 
     public void SetLotterySnapshot(LotteryScheduleSnapshot snapshot) => lotterySnapshot = snapshot;
+
+    public void SetPaissaStreamStatus(string status) => paissaStreamStatus = status;
 
     public override void PreDraw()
     {
@@ -265,118 +268,11 @@ public sealed class DebugWindow : Window
 
     private void DrawPaissaApi()
     {
-        ImGui.TextWrapped("PaissaDB API access is disabled. PlotWatch will not send requests. Housing listings can only come from the saved local cache.");
-        ImGui.TextDisabled($"Base URL: {PaissaApiClient.BaseUrl}");
-        ImGui.TextWrapped("Saved-cache status is shown in the Houses tab.");
-
-        if (diagnostics.PaissaWorlds.Count > 0)
-        {
-            var selected = diagnostics.PaissaWorlds.FirstOrDefault(world => world.Id == diagnostics.SelectedPaissaWorldId)
-                ?? diagnostics.PaissaWorlds[0];
-            if (ImGui.BeginCombo("World", $"{selected.Name} ({selected.DataCenterName}) · ID {selected.Id}"))
-            {
-                foreach (var world in diagnostics.PaissaWorlds)
-                {
-                    var isSelected = world.Id == diagnostics.SelectedPaissaWorldId;
-                    if (ImGui.Selectable($"{world.Name} ({world.DataCenterName}) · ID {world.Id}", isSelected))
-                        diagnostics.SelectedPaissaWorldId = world.Id;
-                    if (isSelected)
-                        ImGui.SetItemDefaultFocus();
-                }
-                ImGui.EndCombo();
-            }
-
-            ImGui.TextDisabled("Live API inspection disabled.");
-        }
-        else
-        {
-            ImGui.TextDisabled("Fetch world list before selecting a world.");
-        }
-
-        ImGui.TextWrapped($"World inspection: {diagnostics.PaissaInspectionStatus}; last success: {diagnostics.PaissaInspectionLastSuccessUtc?.ToString("O") ?? "none"}");
-        if (diagnostics.PaissaInspection is { } inspection)
-        {
-            ImGui.TextUnformatted($"{inspection.Name} (ID {inspection.Id}) · reported open plots: {inspection.ReportedOpenPlots?.ToString() ?? "Unknown"} · oldest observation: {FormatUnix(inspection.OldestPlotTime)}");
-            if (inspection.Warnings.Count > 0)
-            {
-                ImGui.TextColored(new Vector4(1f, 0.7f, 0.2f, 1f), $"Partial/unexpected response: {inspection.Warnings.Count} schema issue(s)");
-                foreach (var warning in inspection.Warnings.Take(8))
-                    ImGui.BulletText(warning);
-            }
-            ImGui.TextUnformatted("Districts:");
-            foreach (var district in inspection.Districts)
-                ImGui.BulletText($"{district.Name} (ID {district.Id}): API count {district.ReportedOpenPlots?.ToString() ?? "Unknown"}; parsed {district.ActualPlotCount}; oldest {FormatUnix(district.OldestPlotTime)}");
-
-            ImGui.TextUnformatted($"Field presence across {inspection.Districts.Sum(district => district.ActualPlotCount)} returned plots:");
-            if (ImGui.BeginTable("##paissa-fields", 5, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(0, 180f * ImGuiHelpers.GlobalScale)))
-            {
-                ImGui.TableSetupColumn("Field");
-                ImGui.TableSetupColumn("Present");
-                ImGui.TableSetupColumn("Null");
-                ImGui.TableSetupColumn("Missing");
-                ImGui.TableSetupColumn("Sample");
-                ImGui.TableHeadersRow();
-                foreach (var field in inspection.Fields)
-                {
-                    ImGui.TableNextRow();
-                    ImGui.TableNextColumn(); ImGui.TextUnformatted(field.Name);
-                    ImGui.TableNextColumn(); ImGui.TextUnformatted(field.PresentCount.ToString());
-                    ImGui.TableNextColumn(); ImGui.TextUnformatted(field.NullCount.ToString());
-                    ImGui.TableNextColumn(); ImGui.TextUnformatted(field.MissingCount.ToString());
-                    ImGui.TableNextColumn(); ImGui.TextUnformatted(field.SampleValue);
-                }
-                ImGui.EndTable();
-            }
-
-            ImGui.TextUnformatted("Sample plots (API ward/plot values are zero-based):");
-            foreach (var plot in inspection.Samples)
-            {
-                var address = plot.WardNumber is { } ward && plot.PlotNumber is { } number
-                    ? $"W{ward + 1} P{number + 1} (raw {ward}/{number})"
-                    : "Address unknown";
-                var globalPhase = lotterySnapshot is { } schedule ? PaissaHousingPolicy.GetPhaseLabel(plot.PurchaseSystem, schedule.NowUtc) : "Waiting for schedule";
-                var globalClose = lotterySnapshot is { } clock ? PaissaHousingPolicy.GetDisplayedPhaseDeadline(plot.PurchaseSystem, clock.NowUtc)?.ToString("O") ?? "Unknown" : "Unknown";
-                var reported = lotterySnapshot is { } statusClock
-                    ? PaissaHousingPolicy.GetReportedStatusLabel(plot.LottoPhase, plot.LottoPhaseUntil, statusClock.NowUtc)
-                    : PaissaHousingPolicy.GetReportedStatusLabel(plot.LottoPhase);
-                var timing = lotterySnapshot is { } timingClock
-                    ? PaissaHousingPolicy.GetReportedStatusTiming(plot.LottoPhase, plot.LottoPhaseUntil, timingClock.NowUtc).ToString()
-                    : "Waiting for schedule";
-                ImGui.BulletText($"{address}; size={FormatSize(plot.Size)}; price={plot.Price?.ToString("N0") ?? "Unknown"}; type={PaissaApiParser.DescribePurchaseSystem(plot.PurchaseSystem)}; global period={globalPhase}; period end={globalClose}; reported status={reported}; report timing={timing}; raw API phase={plot.LottoPhase?.ToString() ?? "Not reported"} ({PaissaApiParser.DescribeLotteryPhase(plot.LottoPhase)}); entrants={plot.LottoEntries?.ToString() ?? "Not reported"}; raw API deadline={FormatUnix(plot.LottoPhaseUntil)} (raw {plot.LottoPhaseUntil?.ToString() ?? "Not reported"}); last observed={FormatUnix(plot.LastUpdatedTime)}; downloaded={diagnostics.PaissaInspectionLastSuccessUtc?.ToString("O") ?? "Unknown"}");
-            }
-        }
-
+        ImGui.TextWrapped("Live stream diagnostics. A connected socket confirms the handshake; received pings confirm inbound traffic. Deltas apply incrementally; no full-state request or REST fallback is used.");
+        ImGui.TextDisabled($"WebSocket: {PaissaWebSocketClient.WebSocketUrl}");
         ImGui.Separator();
-        ImGui.TextWrapped($"OpenAPI schema: {diagnostics.PaissaSchemaStatus}; last success: {diagnostics.PaissaSchemaLastSuccessUtc?.ToString("O") ?? "none"}");
-        if (!string.IsNullOrEmpty(diagnostics.PaissaSchemaSummary))
-            ImGui.TextWrapped(diagnostics.PaissaSchemaSummary);
+        ImGui.TextWrapped(paissaStreamStatus);
     }
-
-    private static string FormatUnix(double? seconds)
-        => PaissaApiParser.UnixSecondsToUtc(seconds)?.ToString("yyyy-MM-dd HH:mm:ss 'UTC'") ?? "Unknown";
-
-    private static string FormatUnix(long? seconds)
-    {
-        if (seconds is null)
-            return "Unknown";
-        try
-        {
-            return DateTimeOffset.FromUnixTimeSeconds(seconds.Value).ToString("yyyy-MM-dd HH:mm:ss 'UTC'");
-        }
-        catch (ArgumentOutOfRangeException)
-        {
-            return "Invalid timestamp";
-        }
-    }
-
-    private static string FormatSize(int? size) => size switch
-    {
-        0 => "Small",
-        1 => "Medium",
-        2 => "Large",
-        null => "Unknown",
-        _ => $"Unrecognized ({size})",
-    };
 
     private void DrawHistory()
     {

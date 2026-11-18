@@ -38,6 +38,8 @@
         <Compile Include="..\PlotWatch\Paissa\PaissaApiClient.cs" Link="Production\PaissaApiClient.cs" />
         <Compile Include="..\PlotWatch\Paissa\HousingCacheWriter.cs" Link="Production\HousingCacheWriter.cs" />
         <Compile Include="..\PlotWatch\Paissa\PaissaHousingPolicy.cs" Link="Production\PaissaHousingPolicy.cs" />
+        <Compile Include="..\PlotWatch\Paissa\PaissaDeltaParser.cs" Link="Production\PaissaDeltaParser.cs" />
+        <Compile Include="..\PlotWatch\Paissa\WorldDataCenterMap.cs" Link="Production\WorldDataCenterMap.cs" />
         <Compile Include="..\PlotWatch\Paissa\PaissaHousingSorting.cs" Link="Production\PaissaHousingSorting.cs" />
         <Compile Include="..\PlotWatch\Windows\PlotWatchTab.cs" Link="Production\PlotWatchTab.cs" />
         <Compile Include="..\PlotWatch\Windows\TooltipPlacement.cs" Link="Production\TooltipPlacement.cs" />
